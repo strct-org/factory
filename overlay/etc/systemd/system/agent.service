@@ -1,0 +1,18 @@
+[Unit]
+Description=Strct Agent
+# Wait until internet and docker are ready
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=root
+# This is where we will copy your binary to
+ExecStart=/usr/local/bin/agent
+# If it crashes, restart it
+Restart=always
+RestartSec=5s
+
+[Install]
+# Enable this to start at boot
+WantedBy=multi-user.target
