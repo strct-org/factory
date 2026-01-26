@@ -2,9 +2,9 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-AGENT_VERSION="v1.0.0"
+AGENT_VERSION="v1.0.1"
 BINARY_NAME="strct-agent-arm64" 
-DOWNLOAD_URL="https://github.com/strct-org/structio-agent/releases/download/${AGENT_VERSION}/${BINARY_NAME}"
+DOWNLOAD_URL="https://github.com/strct-org/strct/releases/download/${AGENT_VERSION}/${BINARY_NAME}"
 
 echo "Creating Service File..."
 cat <<EOF > strct_agent.service
