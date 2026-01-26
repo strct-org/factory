@@ -2,8 +2,7 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-AGENT_VERSION="v1.0.1"
-# Ensure this matches the binary name in your GitHub Release
+AGENT_VERSION="v1.0.0"
 BINARY_NAME="strct-agent-arm64" 
 DOWNLOAD_URL="https://github.com/strct-org/structio-agent/releases/download/${AGENT_VERSION}/${BINARY_NAME}"
 
@@ -28,11 +27,11 @@ EOF
 echo "Copying Service file to image..."
 cp strct_agent.service $MOUNT_POINT/etc/systemd/system/
 
-echo "⬇ Downloading Agent ${AGENT_VERSION}..."
+echo "Downloading Agent ${AGENT_VERSION}..."
 wget -q --show-progress -O agent_binary "$DOWNLOAD_URL"
 
 if [ ! -s "agent_binary" ]; then
-    echo "❌ Error: Download failed or file is empty."
+    echo "[ERROR] Download failed or file is empty."
     exit 1
 fi
 
@@ -42,6 +41,7 @@ chmod +x $MOUNT_POINT/usr/local/bin/agent
 echo "Enabling systemd service..."
 chroot $MOUNT_POINT systemctl enable strct_agent.service
 
+# Remove local temp file
 rm strct_agent.service
 
-echo "Agent ${AGENT_VERSION} installed successfully."
+echo "[OK] Agent ${AGENT_VERSION} installed successfully."

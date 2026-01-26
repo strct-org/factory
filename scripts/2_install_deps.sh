@@ -11,13 +11,13 @@ export DEBIAN_FRONTEND=noninteractive
 echo "Running apt-get update..."
 apt-get update
 
-echo "Installing Docker..."
+echo "Installing Docker and utilities..."
 apt-get install -y docker.io network-manager curl wget
 
-echo "Enabling Docker..."
+echo "Enabling Docker service..."
 systemctl enable docker
 
-echo "Cleaning up..."
+echo "Cleaning up package cache..."
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 EOF
@@ -28,4 +28,4 @@ chroot $MOUNT_POINT /bin/bash /tmp/install_inside.sh
 
 rm $MOUNT_POINT/tmp/install_inside.sh
 
-echo "Dependencies installed successfully."
+echo "[OK] Dependencies installed successfully."
