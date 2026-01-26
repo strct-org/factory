@@ -1,21 +1,20 @@
 #!/bin/bash
-
 set -e
 
-IMAGE_FILE="raspberry_pi_server.img" #! change to orange.pi
+IMAGE_FILE="../raspberrypi.img"
+OUTPUT_FILE="../strct-release-v1.img"
 MOUNT_POINT="mnt_root"
 
 echo "Unmounting image..."
 
-# Unmount everything
-sudo umount $MOUNT_POINT/boot || true
-sudo umount $MOUNT_POINT/dev || true
-sudo umount $MOUNT_POINT/proc || true
-sudo umount $MOUNT_POINT/sys || true
-sudo umount $MOUNT_POINT || true
+umount $MOUNT_POINT/boot || true
+umount $MOUNT_POINT/dev || true
+umount $MOUNT_POINT/proc || true
+umount $MOUNT_POINT/sys || true
+umount $MOUNT_POINT || true
 
 # Detach loop device
-sudo losetup -D
+losetup -D
 
 echo "Shrinking image using PiShrink..."
 
@@ -25,7 +24,6 @@ if [ ! -f "pishrink.sh" ]; then
     chmod +x pishrink.sh
 fi
 
-# Run it
-sudo ./pishrink.sh $IMAGE_FILE strct-release-v1.img
+./pishrink.sh "$IMAGE_FILE" "$OUTPUT_FILE"
 
-echo "DONE! Ready to flash: strct-release-v1.img"
+echo "DONE! Final image is located at: $OUTPUT_FILE"

@@ -1,38 +1,37 @@
 #!/bin/bash
-
 set -e
 
-IMAGE_FILE="raspberry_pi_server.img" #! change to orange.pi
+IMAGE_FILE="../raspberrypi.img" 
 MOUNT_POINT="mnt_root"
+
+if [ ! -f "$IMAGE_FILE" ]; then
+    echo "Error: Cannot find $IMAGE_FILE"
+    exit 1
+fi
 
 echo "Creating mount directory..."
 mkdir -p $MOUNT_POINT
 
 echo "Setting up loop device..."
-# -P scans for partitions (p1, p2)
-LOOP_DEV=$(sudo losetup -fP --show "$IMAGE_FILE")
+LOOP_DEV=$(losetup -fP --show "$IMAGE_FILE")
 
 echo "Image mapped to $LOOP_DEV"
 
-# Mount the Root filesystem (usually partition 2 on Orange Pi images)
-# Note: Check with 'fdisk -l orangepi.img' if p2 is indeed Linux
-echo "Mounting Root partition..."
-sudo mount "${LOOP_DEV}p2" $MOUNT_POINT
+echo "Mounting Root partition (p2)..."
+mount "${LOOP_DEV}p2" $MOUNT_POINT
 
-echo "Mounting Boot partition (optional, usually p1)..."
-sudo mount "${LOOP_DEV}p1" $MOUNT_POINT/boot
+echo "Mounting Boot partition (p1)..."
+mount "${LOOP_DEV}p1" $MOUNT_POINT/boot
 
-echo "Binding system directories for chroot..."
-sudo mount --bind /dev $MOUNT_POINT/dev
-sudo mount --bind /proc $MOUNT_POINT/proc
-sudo mount --bind /sys $MOUNT_POINT/sys
+echo "Binding system directories..."
+mount --bind /dev $MOUNT_POINT/dev
+mount --bind /proc $MOUNT_POINT/proc
+mount --bind /sys $MOUNT_POINT/sys
 
-# CRITICAL: Copy QEMU binary so we can run ARM commands on x86
 echo "Injecting QEMU for ARM64..."
-sudo cp /usr/bin/qemu-aarch64-static $MOUNT_POINT/usr/bin/
-
-echo "Image mounted at $MOUNT_POINT"
-echo "Exporting LOOP_DEV=$LOOP_DEV"
+cp /usr/bin/qemu-aarch64-static $MOUNT_POINT/usr/bin/
 
 echo "Copying DNS resolver..."
-sudo cp /etc/resolv.conf $MOUNT_POINT/etc/resolv.conf
+cp /etc/resolv.conf $MOUNT_POINT/etc/resolv.conf
+
+echo "Image mounted at $MOUNT_POINT"

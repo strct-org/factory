@@ -1,11 +1,8 @@
 #!/bin/bash
-
 set -e
 
-# Configuration
 LOG_FILE="build.log"
 
-# Function to print pretty headers
 print_step() {
     echo ""
     echo "========================================================"

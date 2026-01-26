@@ -2,26 +2,46 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-AGENT_VERSION="v1.0.0"
-DOWNLOAD_URL="https://github.com/strct-org/structio-agent/releases/download/${AGENT_VERSION}/structio-agent-arm64"
+AGENT_VERSION="v1.0.1"
+# Ensure this matches the binary name in your GitHub Release
+BINARY_NAME="strct-agent-arm64" 
+DOWNLOAD_URL="https://github.com/strct-org/structio-agent/releases/download/${AGENT_VERSION}/${BINARY_NAME}"
 
-echo "Copying Strct files..."
+echo "Creating Service File..."
+cat <<EOF > strct_agent.service
+[Unit]
+Description=Strct Agent
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
-sudo cp ../overlay/etc/systemd/system/strct_agent.service $MOUNT_POINT/etc/systemd/system/
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/agent
+Restart=always
+RestartSec=5s
 
-echo "⬇ Downloading Agent ${AGENT_VERSION} from GitHub..."
+[Install]
+WantedBy=multi-user.target
+EOF
 
+echo "Copying Service file to image..."
+cp strct_agent.service $MOUNT_POINT/etc/systemd/system/
+
+echo "⬇ Downloading Agent ${AGENT_VERSION}..."
 wget -q --show-progress -O agent_binary "$DOWNLOAD_URL"
 
 if [ ! -s "agent_binary" ]; then
-    echo "Error: Download failed or file is empty."
+    echo "❌ Error: Download failed or file is empty."
     exit 1
 fi
 
-sudo mv agent_binary $MOUNT_POINT/usr/local/bin/agent
-sudo chmod +x $MOUNT_POINT/usr/local/bin/agent
+mv agent_binary $MOUNT_POINT/usr/local/bin/agent
+chmod +x $MOUNT_POINT/usr/local/bin/agent
 
 echo "Enabling systemd service..."
-sudo chroot $MOUNT_POINT systemctl enable strct_agent.service
+chroot $MOUNT_POINT systemctl enable strct_agent.service
 
-echo " Agent ${AGENT_VERSION} installed successfully."
+rm strct_agent.service
+
+echo "Agent ${AGENT_VERSION} installed successfully."
