@@ -1,0 +1,56 @@
+name: Build Pi Image
+
+on:
+  workflow_dispatch:  # Allows you to manually trigger the build from the "Actions" tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # specialized permissions usually needed for loop mounting/chroot
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        # This ensures the runner can execute ARM64 binaries (required for chroot)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Download Base Image
+        # We download the official RPi OS Lite (64-bit) here because it's too big for Git.
+        # If you use a specific custom image, change the URL below.
+        run: |
+          echo "Downloading Raspberry Pi OS Lite (64-bit)..."
+          wget -q -O rpios.img.xz https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
+          
+          echo "Extracting..."
+          unxz rpios.img.xz
+          
+          echo "Renaming to raspberrypi.img to match script expectations..."
+          mv *.img raspberrypi.img
+          ls -lh raspberrypi.img
+
+      - name: Run Build Script
+        run: |
+          # Go into the scripts folder
+          cd scripts
+          
+          # Ensure scripts are executable
+          chmod +x *.sh
+          
+          # Run the main build script with sudo
+          sudo ./0_build_all.sh
+
+      - name: Verify Output
+        run: |
+          ls -lh strct-release-v1.img
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: strct-pi-image
+          path: strct-release-v1.img
+          retention-days: 5
+          compression-level: 0 # The image is already shrunk/compressed, this speeds up upload
