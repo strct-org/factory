@@ -1,6 +1,8 @@
 #!/bin/bash
+
 set -e
-IMAGE_FILE="orangepi.img"
+
+IMAGE_FILE="raspberry_pi_server.img" #! change to orange.pi
 MOUNT_POINT="mnt_root"
 
 echo "Unmounting image..."
@@ -24,6 +26,6 @@ if [ ! -f "pishrink.sh" ]; then
 fi
 
 # Run it
-sudo ./pishrink.sh $IMAGE_FILE structio-release-v1.img
+sudo ./pishrink.sh $IMAGE_FILE strct-release-v1.img
 
-echo "DONE! Ready to flash: structio-release-v1.img"
+echo "DONE! Ready to flash: strct-release-v1.img"

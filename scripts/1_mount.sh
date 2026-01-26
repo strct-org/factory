@@ -1,7 +1,8 @@
 #!/bin/bash
+
 set -e
 
-IMAGE_FILE="orangepi.img" # You will rename your downloaded image to this
+IMAGE_FILE="raspberry_pi_server.img" #! change to orange.pi
 MOUNT_POINT="mnt_root"
 
 echo "Creating mount directory..."

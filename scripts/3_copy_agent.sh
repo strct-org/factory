@@ -2,24 +2,26 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-echo "Copying StructIO files..."
+AGENT_VERSION="v1.0.0"
+DOWNLOAD_URL="https://github.com/strct-org/structio-agent/releases/download/${AGENT_VERSION}/structio-agent-arm64"
 
-# 1. Copy the Service File
-sudo cp ../overlay/etc/systemd/system/structio-agent.service $MOUNT_POINT/etc/systemd/system/
+echo "Copying Strct files..."
 
-# 2. Copy the Go Binary
-# IMPORTANT: You must have compiled this beforehand!
-# GOOS=linux GOARCH=arm64 go build -o agent
-if [ -f "../agent_binary" ]; then
-    sudo cp ../agent_binary $MOUNT_POINT/usr/local/bin/agent
-    sudo chmod +x $MOUNT_POINT/usr/local/bin/agent
-else
-    echo "ERROR: ../agent_binary not found. Did you compile it?"
+sudo cp ../overlay/etc/systemd/system/strct_agent.service $MOUNT_POINT/etc/systemd/system/
+
+echo "⬇ Downloading Agent ${AGENT_VERSION} from GitHub..."
+
+wget -q --show-progress -O agent_binary "$DOWNLOAD_URL"
+
+if [ ! -s "agent_binary" ]; then
+    echo "Error: Download failed or file is empty."
     exit 1
 fi
 
-# 3. Enable the Service inside the image
-echo "Enabling systemd service..."
-sudo chroot $MOUNT_POINT systemctl enable structio-agent.service
+sudo mv agent_binary $MOUNT_POINT/usr/local/bin/agent
+sudo chmod +x $MOUNT_POINT/usr/local/bin/agent
 
-echo "Files copied and service enabled."
+echo "Enabling systemd service..."
+sudo chroot $MOUNT_POINT systemctl enable strct_agent.service
+
+echo " Agent ${AGENT_VERSION} installed successfully."

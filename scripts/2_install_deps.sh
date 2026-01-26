@@ -13,7 +13,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 
 # 2. Install Docker
-apt-get install -y docker.io
+apt-get install -y docker.io network-manager
 
 # 3. Enable Docker to start on boot
 systemctl enable docker
