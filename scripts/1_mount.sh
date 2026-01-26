@@ -33,3 +33,6 @@ sudo cp /usr/bin/qemu-aarch64-static $MOUNT_POINT/usr/bin/
 
 echo "Image mounted at $MOUNT_POINT"
 echo "Exporting LOOP_DEV=$LOOP_DEV"
+
+echo "Copying DNS resolver..."
+sudo cp /etc/resolv.conf $MOUNT_POINT/etc/resolv.conf

@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# Stop execution immediately if any command or script fails
 set -e
 
 # Configuration
@@ -20,10 +19,7 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Ensure all scripts are executable
 chmod +x 1_mount.sh 2_install_deps.sh 3_copy_agent.sh 4_shrink.sh
-
-# --- START EXECUTION ---
 
 echo "Starting Build Process..." | tee $LOG_FILE
 

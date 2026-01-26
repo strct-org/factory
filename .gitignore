@@ -1,1 +1,4 @@
 *.img
+*.xz
+mnt_root/
+build.log
