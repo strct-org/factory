@@ -1,26 +1,55 @@
 name: Build Pi Image
 
 on:
-  workflow_dispatch:  # Allows you to manually trigger the build from the "Actions" tab
+  workflow_dispatch: # Manual trigger
+  push:
+    tags:
+      - 'v*' 
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # specialized permissions usually needed for loop mounting/chroot
-    permissions:
-      contents: read
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build Agent (ARM64)
+        env:
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          mkdir -p src
+          # Builds the binary and places it where scripts expect it (../src/)
+          go build -o src/strct-agent-arm64 cmd/cloud-agent/main.go
+
+      - name: Download FRPC (ARM64)
+        run: |
+          # Download specific version of FRPC
+          wget -q https://github.com/fatedier/frp/releases/download/v0.51.3/frp_0.51.3_linux_arm64.tar.gz
+          tar -zxvf frp_0.51.3_linux_arm64.tar.gz
+          
+          # Move to the src directory
+          mv frp_0.51.3_linux_arm64/frpc src/frpc
+          chmod +x src/frpc
+          
+          # Cleanup
+          rm -rf frp_0.51.3_linux_arm64*
+
       - name: Set up QEMU
-        # This ensures the runner can execute ARM64 binaries (required for chroot)
         uses: docker/setup-qemu-action@v3
 
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          # 'parted' is needed for resizing, 'udev' for loop devices
+          sudo apt-get install -y parted udev
+
       - name: Download Base Image
-        # We download the official RPi OS Lite (64-bit) here because it's too big for Git.
-        # If you use a specific custom image, change the URL below.
         run: |
           echo "Downloading Raspberry Pi OS Lite (64-bit)..."
           wget -q -O rpios.img.xz https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
@@ -28,29 +57,36 @@ jobs:
           echo "Extracting..."
           unxz rpios.img.xz
           
-          echo "Renaming to raspberrypi.img to match script expectations..."
+          echo "Renaming to raspberrypi.img..."
           mv *.img raspberrypi.img
-          ls -lh raspberrypi.img
 
       - name: Run Build Script
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           # Go into the scripts folder
           cd scripts
           
-          # Ensure scripts are executable
           chmod +x *.sh
           
-          # Run the main build script with sudo
-          sudo ./0_build_all.sh
+          # sudo -E preserves the secrets we just set above
+          sudo -E ./0_build_all.sh
 
-      - name: Verify Output
+      - name: Compress Output
         run: |
-          ls -lh strct-release-v1.0.2.img
+          # The script 4_shrink.sh output the file as '../strct-release-v1.img'
+          # We rename it to match the version tag or date if needed, or keep it simple.
+          mv strct-release-v1.img strct-pi-image.img
+          
+          # XZ compression saves massive bandwidth on download
+          xz -z -v -0 strct-pi-image.img
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: strct-pi-image
-          path: strct-release-v1.0.2.img
+          path: strct-pi-image.img.xz
           retention-days: 5
-          compression-level: 0 # The image is already shrunk/compressed, this speeds up upload
