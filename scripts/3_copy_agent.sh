@@ -2,9 +2,37 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-AGENT_VERSION="v1.0.2"
-BINARY_NAME="strct-agent-arm64" 
-DOWNLOAD_URL="https://github.com/strct-org/strct/releases/download/${AGENT_VERSION}/${BINARY_NAME}"
+: "${VPS_IP:?VPS_IP is not set}"
+: "${VPS_PORT:?VPS_PORT is not set}"
+: "${DOMAIN:?DOMAIN is not set}"
+AUTH_TOKEN="${AUTH_TOKEN:-}" 
+
+LOCAL_BINARY_PATH="../src/strct-agent-arm64" 
+LOCAL_FRPC_PATH="../src/frpc"
+TARGET_DIR="$MOUNT_POINT/etc/strct"
+
+echo "Checking for binaries..."
+if [ ! -f "$LOCAL_BINARY_PATH" ]; then echo "[ERROR] Agent binary missing at $LOCAL_BINARY_PATH"; exit 1; fi
+if [ ! -f "$LOCAL_FRPC_PATH" ]; then echo "[ERROR] frpc binary missing at $LOCAL_FRPC_PATH"; exit 1; fi
+
+echo "Creating directories..."
+mkdir -p "$TARGET_DIR"
+
+echo "Copying binaries..."
+cp "$LOCAL_BINARY_PATH" "$MOUNT_POINT/usr/local/bin/cloud-agent"
+chmod +x "$MOUNT_POINT/usr/local/bin/cloud-agent"
+
+cp "$LOCAL_FRPC_PATH" "$TARGET_DIR/frpc"
+chmod +x "$TARGET_DIR/frpc"
+
+echo "Injecting Secrets into Image .env..."
+cat <<EOF > "$TARGET_DIR/.env"
+VPS_IP=$VPS_IP
+VPS_PORT=$VPS_PORT
+DOMAIN=$DOMAIN
+AUTH_TOKEN=$AUTH_TOKEN
+EOF
+chmod 600 "$TARGET_DIR/.env"
 
 echo "Creating Service File..."
 cat <<EOF > strct_agent.service
@@ -16,7 +44,9 @@ Wants=network-online.target docker.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/agent
+# IMPORTANT: Sets the folder so the app can find .env and ./frpc
+WorkingDirectory=/etc/strct
+ExecStart=/usr/local/bin/cloud-agent
 Restart=always
 RestartSec=5s
 
@@ -26,22 +56,10 @@ EOF
 
 echo "Copying Service file to image..."
 cp strct_agent.service $MOUNT_POINT/etc/systemd/system/
-
-echo "Downloading Agent ${AGENT_VERSION}..."
-wget -q --show-progress -O agent_binary "$DOWNLOAD_URL"
-
-if [ ! -s "agent_binary" ]; then
-    echo "[ERROR] Download failed or file is empty."
-    exit 1
-fi
-
-mv agent_binary $MOUNT_POINT/usr/local/bin/agent
-chmod +x $MOUNT_POINT/usr/local/bin/agent
+rm strct_agent.service
 
 echo "Enabling systemd service..."
 chroot $MOUNT_POINT systemctl enable strct_agent.service
-rm strct_agent.service
-echo "[OK] Agent installed."
 
 echo "Updating PARTUUIDs to ensure boot..."
 
@@ -53,7 +71,6 @@ if [ -z "$ROOT_DEV" ]; then
 fi
 
 BOOT_DEV="${ROOT_DEV%p2}p1"
-
 CURRENT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV")
 BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV")
 
@@ -73,4 +90,4 @@ sed -i "s/root=PARTUUID=[^ ]*/root=PARTUUID=$CURRENT_UUID/" "$CMDLINE_PATH"
 sed -i "s/PARTUUID=[^ ]*[ \t]*\/[ \t]/PARTUUID=$CURRENT_UUID \/ /" "$MOUNT_POINT/etc/fstab"
 sed -i "s/PARTUUID=[^ ]*[ \t]*\/boot/PARTUUID=$BOOT_UUID \/boot/" "$MOUNT_POINT/etc/fstab"
 
-echo "[OK] UUIDs updated."
+echo "[OK] UUIDs updated. Agent baked in successfully."

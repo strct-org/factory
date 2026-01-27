@@ -16,26 +16,18 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Make sure siblings are executable
 chmod +x 1_mount.sh 2_install_deps.sh 3_copy_agent.sh 4_shrink.sh
 
 echo "Starting Factory Build Process..." | tee $LOG_FILE
 
-# --- STEP 0: HOST SETUP ---
 print_step "0" "CHECKING HOST REQUIREMENTS"
 echo "Checking and installing required host tools..." | tee -a $LOG_FILE
 
-# Update package list quietly
 apt-get update -qq
 
-# Install tools required for image manipulation and ARM emulation
-# parted: used to resize partitions
-# qemu-user-static: used to run ARM code on x86
 DEBIAN_FRONTEND=noninteractive apt-get install -y parted qemu-user-static binfmt-support wget curl udev | tee -a $LOG_FILE
 
 echo "[OK] Host environment is ready." | tee -a $LOG_FILE
-
-# --- EXECUTE STEPS ---
 
 print_step "1" "MOUNTING AND EXPANDING IMAGE"
 ./1_mount.sh | tee -a $LOG_FILE
