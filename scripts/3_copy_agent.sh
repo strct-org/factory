@@ -40,8 +40,37 @@ chmod +x $MOUNT_POINT/usr/local/bin/agent
 
 echo "Enabling systemd service..."
 chroot $MOUNT_POINT systemctl enable strct_agent.service
-
-# Remove local temp file
 rm strct_agent.service
+echo "[OK] Agent installed."
 
-echo "[OK] Agent ${AGENT_VERSION} installed successfully."
+echo "Updating PARTUUIDs to ensure boot..."
+
+ROOT_DEV=$(findmnt -n -o SOURCE --target "$MOUNT_POINT")
+
+if [ -z "$ROOT_DEV" ]; then
+    echo "[ERROR] Could not find mounted loop device for UUID update."
+    exit 1
+fi
+
+BOOT_DEV="${ROOT_DEV%p2}p1"
+
+CURRENT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV")
+BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV")
+
+if [ -z "$CURRENT_UUID" ] || [ -z "$BOOT_UUID" ]; then
+    echo "[ERROR] Failed to fetch UUIDs."
+    exit 1
+fi
+
+echo "Root P2 UUID: $CURRENT_UUID"
+echo "Boot P1 UUID: $BOOT_UUID"
+
+CMDLINE_PATH="$MOUNT_POINT/boot/cmdline.txt"
+[ -f "$MOUNT_POINT/boot/firmware/cmdline.txt" ] && CMDLINE_PATH="$MOUNT_POINT/boot/firmware/cmdline.txt"
+
+sed -i "s/root=PARTUUID=[^ ]*/root=PARTUUID=$CURRENT_UUID/" "$CMDLINE_PATH"
+
+sed -i "s/PARTUUID=[^ ]*[ \t]*\/[ \t]/PARTUUID=$CURRENT_UUID \/ /" "$MOUNT_POINT/etc/fstab"
+sed -i "s/PARTUUID=[^ ]*[ \t]*\/boot/PARTUUID=$BOOT_UUID \/boot/" "$MOUNT_POINT/etc/fstab"
+
+echo "[OK] UUIDs updated."
