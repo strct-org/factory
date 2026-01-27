@@ -19,9 +19,11 @@ echo "Creating directories..."
 mkdir -p "$TARGET_DIR"
 
 echo "Copying binaries..."
+# 1. Copy Agent
 cp "$LOCAL_BINARY_PATH" "$MOUNT_POINT/usr/local/bin/cloud-agent"
 chmod +x "$MOUNT_POINT/usr/local/bin/cloud-agent"
 
+# 2. Copy FRPC
 cp "$LOCAL_FRPC_PATH" "$TARGET_DIR/frpc"
 chmod +x "$TARGET_DIR/frpc"
 
@@ -44,7 +46,7 @@ Wants=network-online.target docker.service
 [Service]
 Type=simple
 User=root
-# IMPORTANT: Sets the folder so the app can find .env and ./frpc
+# IMPORTANT: WorkingDirectory ensures app finds .env and ./frpc
 WorkingDirectory=/etc/strct
 ExecStart=/usr/local/bin/cloud-agent
 Restart=always
@@ -90,4 +92,4 @@ sed -i "s/root=PARTUUID=[^ ]*/root=PARTUUID=$CURRENT_UUID/" "$CMDLINE_PATH"
 sed -i "s/PARTUUID=[^ ]*[ \t]*\/[ \t]/PARTUUID=$CURRENT_UUID \/ /" "$MOUNT_POINT/etc/fstab"
 sed -i "s/PARTUUID=[^ ]*[ \t]*\/boot/PARTUUID=$BOOT_UUID \/boot/" "$MOUNT_POINT/etc/fstab"
 
-echo "[OK] UUIDs updated. Agent baked in successfully."
+echo "[OK] Agent baked in successfully."

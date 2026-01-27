@@ -1,63 +1,57 @@
-name: Build Pi Image
+name: Build Factory Image
 
 on:
-  workflow_dispatch: # Manual trigger
-  push:
-    tags:
-      - 'v*' 
+  workflow_dispatch:
+    inputs:
+      agent_version:
+        description: 'Agent Version to install (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Factory Scripts
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: robinraju/release-downloader@v1
         with:
-          go-version: '1.23'
-
-      - name: Build Agent (ARM64)
-        env:
-          GOOS: linux
-          GOARCH: arm64
+          repository: "strct-org/strct" 
+          tag: ${{ inputs.agent_version }}
+          fileName: "strct-agent-arm64"
+          
+      - name: Download FRPC
         run: |
-          mkdir -p src
-          # Builds the binary and places it where scripts expect it (../src/)
-          go build -o src/strct-agent-arm64 cmd/cloud-agent/main.go
-
-      - name: Download FRPC (ARM64)
-        run: |
-          # Download specific version of FRPC
           wget -q https://github.com/fatedier/frp/releases/download/v0.51.3/frp_0.51.3_linux_arm64.tar.gz
           tar -zxvf frp_0.51.3_linux_arm64.tar.gz
+          mv frp_0.51.3_linux_arm64/frpc frpc
+          chmod +x frpc
+
+      - name: Move Files to Source Folder
+        run: |
+          # We place the files exactly where 3_copy_agent.sh looks for them
+          mkdir -p ../src
           
-          # Move to the src directory
-          mv frp_0.51.3_linux_arm64/frpc src/frpc
-          chmod +x src/frpc
+          mv strct-agent-arm64 ../src/
+          mv frpc ../src/
           
-          # Cleanup
-          rm -rf frp_0.51.3_linux_arm64*
+          ls -lh ../src/
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          # 'parted' is needed for resizing, 'udev' for loop devices
           sudo apt-get install -y parted udev
 
-      - name: Download Base Image
+      - name: Download Base Raspberry Pi Image
         run: |
-          echo "Downloading Raspberry Pi OS Lite (64-bit)..."
           wget -q -O rpios.img.xz https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
-          
-          echo "Extracting..."
           unxz rpios.img.xz
-          
-          echo "Renaming to raspberrypi.img..."
           mv *.img raspberrypi.img
 
       - name: Run Build Script
@@ -67,26 +61,17 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
-          # Go into the scripts folder
-          cd scripts
-          
           chmod +x *.sh
-          
-          # sudo -E preserves the secrets we just set above
           sudo -E ./0_build_all.sh
 
-      - name: Compress Output
+      - name: Rename and Compress
         run: |
-          # The script 4_shrink.sh output the file as '../strct-release-v1.img'
-          # We rename it to match the version tag or date if needed, or keep it simple.
-          mv strct-release-v1.img strct-pi-image.img
-          
-          # XZ compression saves massive bandwidth on download
-          xz -z -v -0 strct-pi-image.img
+          mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
+          xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
 
-      - name: Upload Build Artifact
+      - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: strct-pi-image
-          path: strct-pi-image.img.xz
+          name: strct-os-${{ inputs.agent_version }}
+          path: strct-os-${{ inputs.agent_version }}.img.xz
           retention-days: 5

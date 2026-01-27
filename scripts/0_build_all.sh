@@ -12,7 +12,7 @@ print_step() {
 }
 
 if [[ $EUID -ne 0 ]]; then
-   echo "[ERROR] This script must be run as root. Try: sudo ./0_build_all.sh" 
+   echo "[ERROR] This script must be run as root. Try: sudo -E ./0_build_all.sh" 
    exit 1
 fi
 
@@ -35,10 +35,10 @@ print_step "1" "MOUNTING AND EXPANDING IMAGE"
 print_step "2" "INSTALLING DEPENDENCIES"
 ./2_install_deps.sh | tee -a $LOG_FILE
 
-print_step "3" "INSTALLING AGENT"
+print_step "3" "INSTALLING AGENT & CONFIG"
 ./3_copy_agent.sh | tee -a $LOG_FILE
 
-print_step "4" "CLEANUP AND SHRINK"
+print_step "4" "CLEANUP AND FINALIZE"
 ./4_shrink.sh | tee -a $LOG_FILE
 
 echo ""
