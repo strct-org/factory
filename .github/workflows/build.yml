@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       agent_version:
-        description: 'Agent Version to install (e.g. v1.0.0)'
+        description: 'Agent Version to install'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.2'
 
 jobs:
   build:
@@ -77,8 +77,13 @@ jobs:
 
       - name: Rename and Compress
         run: |
-          # The script outputs to scripts/../strct-release-v1.img (which is root/strct-release-v1.img)
+          # 1. Fix ownership: Change file from root:root to runner:docker
+          sudo chown $(id -u):$(id -g) strct-release-v1.img
+
+          # 2. Rename
           mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
+
+          # 3. Compress (now works because user owns the file)
           xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
 
       - name: Upload Image
