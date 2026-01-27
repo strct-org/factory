@@ -45,12 +45,12 @@ jobs:
 
       - name: Verify Output
         run: |
-          ls -lh strct-release-v1.img
+          ls -lh strct-release-v1.0.2.img
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: strct-pi-image
-          path: strct-release-v1.img
+          path: strct-release-v1.0.2.img
           retention-days: 5
           compression-level: 0 # The image is already shrunk/compressed, this speeds up upload

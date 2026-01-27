@@ -2,7 +2,7 @@
 set -e
 
 IMAGE_FILE="../work_image.img"
-OUTPUT_FILE="../strct-release-v1.img"
+OUTPUT_FILE="../strct-release-v1.0.2.img"
 MOUNT_POINT="mnt_root"
 
 echo "Syncing filesystem..."

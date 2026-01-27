@@ -2,7 +2,7 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-AGENT_VERSION="v1.0.1"
+AGENT_VERSION="v1.0.2"
 BINARY_NAME="strct-agent-arm64" 
 DOWNLOAD_URL="https://github.com/strct-org/strct/releases/download/${AGENT_VERSION}/${BINARY_NAME}"
 
