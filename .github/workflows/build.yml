@@ -1,78 +1,91 @@
 name: Build Factory Image
-
-on:
+'on':
   workflow_dispatch:
     inputs:
       agent_version:
-        description: 'Agent Version to install (e.g. v1.0.0)'
+        description: Agent Version to install (e.g. v1.0.0)
         required: true
-        default: 'v1.0.0'
-
+        default: v1.0.0
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write 
+      contents: write
     steps:
       - name: Checkout Factory Scripts
         uses: actions/checkout@v4
-
       - name: Download Agent from Release
         uses: robinraju/release-downloader@v1
         with:
-          repository: "strct-org/strct" 
-          tag: ${{ inputs.agent_version }}
-          fileName: "strct-agent-arm64"
-          
+          repository: strct-org/strct
+          tag: '${{ inputs.agent_version }}'
+          fileName: strct-agent-arm64
       - name: Download FRPC
-        run: |
-          wget -q https://github.com/fatedier/frp/releases/download/v0.51.3/frp_0.51.3_linux_arm64.tar.gz
-          tar -zxvf frp_0.51.3_linux_arm64.tar.gz
-          mv frp_0.51.3_linux_arm64/frpc frpc
-          chmod +x frpc
+        run: >
+          wget -q
+          https://github.com/fatedier/frp/releases/download/v0.51.3/frp_0.51.3_linux_arm64.tar.gz
 
+          tar -zxvf frp_0.51.3_linux_arm64.tar.gz
+
+          mv frp_0.51.3_linux_arm64/frpc frpc
+
+          chmod +x frpc
       - name: Move Files to Source Folder
         run: |
           # We place the files exactly where 3_copy_agent.sh looks for them
           mkdir -p ../src
-          
+
           mv strct-agent-arm64 ../src/
           mv frpc ../src/
-          
-          ls -lh ../src/
 
+          ls -lh ../src/
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y parted udev
-
       - name: Download Base Raspberry Pi Image
-        run: |
-          wget -q -O rpios.img.xz https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
-          unxz rpios.img.xz
-          mv *.img raspberrypi.img
+        run: >
+          wget -q -O rpios.img.xz
+          https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
 
+          unxz rpios.img.xz
+
+          mv *.img raspberrypi.img
       - name: Run Build Script
         env:
-          VPS_IP: ${{ secrets.VPS_IP }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
-          DOMAIN: ${{ secrets.DOMAIN }}
-          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          VPS_IP: '${{ secrets.VPS_IP }}'
+          VPS_PORT: '${{ secrets.VPS_PORT }}'
+          DOMAIN: '${{ secrets.DOMAIN }}'
+          AUTH_TOKEN: '${{ secrets.AUTH_TOKEN }}'
         run: |
+
+          echo "--- DEBUG: LISTING ALL FILES ---"
+          ls -R
+          echo "--------------------------------"
+
+          # If the scripts are in a 'scripts' folder, go in there
+          if [ -d "scripts" ]; then 
+            echo "Found scripts folder, entering..."
+            cd scripts
+          fi
+
+          # Check if the main script exists before running
+          if [ ! -f "0_build_all.sh" ]; then
+            echo "[ERROR] Could not find 0_build_all.sh in $(pwd)"
+            exit 1
+          fi        
+
           chmod +x *.sh
           sudo -E ./0_build_all.sh
-
       - name: Rename and Compress
         run: |
           mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
           xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
-
       - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: strct-os-${{ inputs.agent_version }}
-          path: strct-os-${{ inputs.agent_version }}.img.xz
+          name: 'strct-os-${{ inputs.agent_version }}'
+          path: 'strct-os-${{ inputs.agent_version }}.img.xz'
           retention-days: 5
