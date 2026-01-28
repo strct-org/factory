@@ -24,11 +24,18 @@ jobs:
           tag: ${{ inputs.agent_version }}
           fileName: "strct-agent-arm64"
           
-      - name: Download FRPC
+      - name: Download FRPC (Latest Stable)
         run: |
-          wget -q https://github.com/fatedier/frp/releases/download/v0.51.3/frp_0.51.3_linux_arm64.tar.gz
-          tar -zxvf frp_0.51.3_linux_arm64.tar.gz
-          mv frp_0.51.3_linux_arm64/frpc frpc
+          # WE USE 0.54.0 HERE. 
+          # Versions >= 0.52.0 support the TOML config your Go code generates.
+          FRP_VERSION="0.54.0"
+          
+          wget -q https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_arm64.tar.gz
+          
+          tar -zxvf frp_${FRP_VERSION}_linux_arm64.tar.gz
+          
+          # Move binary from the extracted folder to current dir
+          mv frp_${FRP_VERSION}_linux_arm64/frpc frpc
           chmod +x frpc
 
       - name: Move Files to Source Folder
@@ -72,7 +79,6 @@ jobs:
           chmod +x *.sh
           
           # Execute. The script looks for "../src/strct-agent-arm64"
-          # Since we are in "scripts/", ".." is the root, so "../src" is correct.
           sudo -E ./0_build_all.sh
 
       - name: Rename and Compress
@@ -83,7 +89,7 @@ jobs:
           # 2. Rename
           mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
 
-          # 3. Compress (now works because user owns the file)
+          # 3. Compress
           xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
 
       - name: Upload Image
