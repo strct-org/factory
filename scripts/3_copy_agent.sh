@@ -13,9 +13,7 @@ TARGET_DIR="$MOUNT_POINT/etc/strct"
 
 echo "Checking for binaries..."
 if [ ! -f "$LOCAL_BINARY_PATH" ]; then echo "[ERROR] Agent binary missing"; exit 1; fi
-if [ ! -f "$LOCAL_FRPC_PATH" ]; then echo "[ERROR] frpc binary missing"; exit 1; fi
 
-echo "Creating directories..."
 mkdir -p "$TARGET_DIR"
 
 echo "Copying binaries..."
@@ -54,8 +52,29 @@ WantedBy=multi-user.target
 EOF
 
 mv strct_agent.service $MOUNT_POINT/etc/systemd/system/
-
-echo "Enabling systemd service..."
 chroot $MOUNT_POINT systemctl enable strct_agent.service
 
-echo "[OK] Agent baked in successfully."
+# ---------------------------------------------------------
+# CRITICAL FIX: Disable Cloud-Init Resize
+# ---------------------------------------------------------
+# We already resized the partition in Step 1 using 'parted'.
+# If cloud-init tries to do it again, it often fails/hangs.
+echo "Disabling Cloud-Init Disk Setup..."
+echo "datasource_list: [ None ]" > $MOUNT_POINT/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+# This specific file tells cloud-init not to mess with disks
+echo "cloud_init_modules:
+ - migrator
+ - bootcmd
+ - write-files
+ - growpart
+ - resizefs
+ - set_hostname
+ - update_hostname
+ - update_etc_hosts
+ - ca-certs
+ - rsyslog
+ - users-groups
+ - ssh
+" > $MOUNT_POINT/etc/cloud/cloud.cfg.d/99-disable-resize.cfg
+
+echo "[OK] Agent baked in & Cloud-Init optimized."
