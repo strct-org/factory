@@ -6,7 +6,7 @@ on:
       agent_version:
         description: 'Agent Version to install'
         required: true
-        default: 'v1.0.3'
+        default: 'v1.0.11'
 
 jobs:
   build:
@@ -44,7 +44,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y parted udev xz-utils
+          sudo apt-get install -y parted udev xz-utils gdisk
 
       - name: Download Base Image (Joshua Riek Ubuntu Server)
         run: |
