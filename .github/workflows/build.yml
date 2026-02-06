@@ -1,4 +1,4 @@
-name: Build Factory Image
+name: Build Orange Pi 3B Image
 
 on:
   workflow_dispatch:
@@ -26,30 +26,17 @@ jobs:
           
       - name: Download FRPC (Latest Stable)
         run: |
-          # WE USE 0.54.0 HERE. 
-          # Versions >= 0.52.0 support the TOML config your Go code generates.
           FRP_VERSION="0.54.0"
-          
           wget -q https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_arm64.tar.gz
-          
           tar -zxvf frp_${FRP_VERSION}_linux_arm64.tar.gz
-          
-          # Move binary from the extracted folder to current dir
           mv frp_${FRP_VERSION}_linux_arm64/frpc frpc
           chmod +x frpc
 
       - name: Move Files to Source Folder
         run: |
-          # Ensure src folder exists at the root of the repo workspace
           mkdir -p ${{ github.workspace }}/src
-          
-          # Move binaries into it
           mv strct-agent-arm64 ${{ github.workspace }}/src/
           mv frpc ${{ github.workspace }}/src/
-          
-          echo "--- VERIFYING SRC FOLDER ---"
-          ls -lh ${{ github.workspace }}/src/
-          echo "----------------------------"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -57,14 +44,24 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y parted udev
+          sudo apt-get install -y parted udev xz-utils
 
-      - name: Download Base Raspberry Pi Image
+      - name: Download Base Image (Joshua Riek Ubuntu Server)
         run: |
-          wget -q -O rpios.img.xz https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
-          unxz rpios.img.xz
-          # The scripts expect the image to be named 'raspberrypi.img' in the ROOT folder
-          mv *.img raspberrypi.img
+          # -------------------------------------------------------------------------
+          # TARGET: Orange Pi 3B (RK3566)
+          # SOURCE: Joshua-Riek/ubuntu-rockchip (Highly recommended for stability)
+          # -------------------------------------------------------------------------
+          IMAGE_URL="https://github.com/Joshua-Riek/ubuntu-rockchip/releases/latest/download/ubuntu-24.04-preinstalled-server-arm64-orangepi-3b.img.xz"
+          
+          echo "Downloading: $IMAGE_URL"
+          wget -q -O orangepi.img.xz "$IMAGE_URL"
+          
+          echo "Decompressing..."
+          unxz orangepi.img.xz
+          
+          # Rename extracted file to standard name
+          find . -maxdepth 1 -name "*.img" -not -name "orangepi.img" -exec mv {} orangepi.img \;
 
       - name: Run Build Script
         env:
@@ -73,28 +70,19 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
-          # Enter the scripts folder
           cd scripts
-          
           chmod +x *.sh
-          
-          # Execute. The script looks for "../src/strct-agent-arm64"
           sudo -E ./0_build_all.sh
 
       - name: Rename and Compress
         run: |
-          # 1. Fix ownership: Change file from root:root to runner:docker
           sudo chown $(id -u):$(id -g) strct-release-v1.img
-
-          # 2. Rename
-          mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
-
-          # 3. Compress
-          xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
+          mv strct-release-v1.img strct-opi3b-${{ inputs.agent_version }}.img
+          xz -z -v -0 strct-opi3b-${{ inputs.agent_version }}.img
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: strct-os-${{ inputs.agent_version }}
-          path: strct-os-${{ inputs.agent_version }}.img.xz
+          name: strct-opi3b-${{ inputs.agent_version }}
+          path: strct-opi3b-${{ inputs.agent_version }}.img.xz
           retention-days: 5
