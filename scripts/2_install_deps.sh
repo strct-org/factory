@@ -11,10 +11,6 @@ export DEBIAN_FRONTEND=noninteractive
 # ----------------------------------------------------------------
 # SPEED OPTIMIZATION: Check if tools exist before updating APT
 # ----------------------------------------------------------------
-# Joshua Riek's images are "Server" builds, so they usually 
-# already have curl, wget, and iptables. 
-# If they exist, we SKIP 'apt-get update' entirely (Saving ~19 mins).
-
 NEEDS_INSTALL=0
 if ! command -v curl &> /dev/null; then NEEDS_INSTALL=1; fi
 if ! command -v wget &> /dev/null; then NEEDS_INSTALL=1; fi
@@ -22,36 +18,24 @@ if ! command -v iptables &> /dev/null; then NEEDS_INSTALL=1; fi
 
 if [ "\$NEEDS_INSTALL" -eq "1" ]; then
     echo "Tools missing. Running optimized APT update..."
-    
-    # 1. Clear old lists to prevent CPU-intensive 'merging' of data
     rm -rf /var/lib/apt/lists/*
-
-    # 2. Run Update with flags to DISABLE heavy CPU tasks:
-    # - Acquire::Languages=none : Don't download/hash English translations (Huge speedup)
-    # - Acquire::PDiffs=false   : Download full list instead of patching (Patching is slow in QEMU)
-    # - Dir::Cache::pkgcache="" : Disable binary cache generation (CPU heavy)
     apt-get update \
         -o Acquire::Languages=none \
         -o Acquire::PDiffs=false \
         -o Dir::Cache::pkgcache="" \
         -o Dir::Cache::srcpkgcache=""
-
     echo "Installing minimal dependencies..."
     apt-get install -y curl wget iptables
 else
-    echo " [SKIP] curl, wget, and iptables are already installed. Skipping APT update."
+    echo " [SKIP] curl, wget, and iptables are already installed."
 fi
 
 # ----------------------------------------------------------------
 # INSTALL DOCKER (Static Binaries)
 # ----------------------------------------------------------------
-# We still use static binaries because 'apt-get install docker.io' 
-# triggers man-db processing which is also slow.
-
 if ! command -v docker &> /dev/null; then
     echo "Downloading Docker Static Binaries..."
     DOCKER_VERSION="24.0.7"
-    # Use -k in case certificates are missing (rare but possible in minimal envs)
     curl -k -sSL "https://download.docker.com/linux/static/stable/aarch64/docker-\${DOCKER_VERSION}.tgz" -o docker.tgz
 
     echo "Extracting Docker..."
@@ -59,7 +43,6 @@ if ! command -v docker &> /dev/null; then
     cp docker/* /usr/bin/
     rm -rf docker docker.tgz
 
-    # Create Group and Service
     groupadd docker || true
 
     echo "Creating Docker Systemd Service..."
@@ -88,6 +71,32 @@ else
 fi
 
 # ----------------------------------------------------------------
+# USER CONFIGURATION (Martbul)
+# ----------------------------------------------------------------
+echo "Configuring User 'martbul'..."
+
+# 1. Create the user if they don't exist
+# -m creates the /home/martbul directory
+# -s /bin/bash ensures you have a proper shell
+if id "martbul" &>/dev/null; then
+    echo "User martbul exists, updating password..."
+else
+    useradd -m -s /bin/bash martbul
+fi
+
+# 2. Set the password for 'martbul'
+echo "martbul:1234" | chpasswd
+
+# 3. Add to 'sudo' group (Grants Administrator/Root access)
+usermod -aG sudo martbul
+
+# 4. Add to 'docker' group (Allows running docker without typing sudo)
+usermod -aG docker martbul
+
+# 5. Set Root password to '1234' as well (Just in case)
+echo "root:1234" | chpasswd
+
+# ----------------------------------------------------------------
 # FINAL CLEANUP & OPTIMIZATION
 # ----------------------------------------------------------------
 
@@ -107,4 +116,4 @@ chmod +x $MOUNT_POINT/tmp/install_inside.sh
 chroot $MOUNT_POINT /bin/bash /tmp/install_inside.sh
 rm $MOUNT_POINT/tmp/install_inside.sh
 
-echo "[OK] Dependencies processing complete."
+echo "[OK] Dependencies & User Configuration complete."
