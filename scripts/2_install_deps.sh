@@ -8,31 +8,40 @@ cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 
-# ----------------------------------------------------------------
-# SPEED OPTIMIZATION: Check if tools exist before updating APT
-# ----------------------------------------------------------------
 NEEDS_INSTALL=0
 if ! command -v curl &> /dev/null; then NEEDS_INSTALL=1; fi
 if ! command -v wget &> /dev/null; then NEEDS_INSTALL=1; fi
 if ! command -v iptables &> /dev/null; then NEEDS_INSTALL=1; fi
+if ! command -v nmcli &> /dev/null; then NEEDS_INSTALL=1; fi  
+
 
 if [ "\$NEEDS_INSTALL" -eq "1" ]; then
     echo "Tools missing. Running optimized APT update..."
+    # Clear lists to ensure we get fresh metadata if needed
     rm -rf /var/lib/apt/lists/*
-    apt-get update \
-        -o Acquire::Languages=none \
-        -o Acquire::PDiffs=false \
-        -o Dir::Cache::pkgcache="" \
-        -o Dir::Cache::srcpkgcache=""
-    echo "Installing minimal dependencies..."
-    apt-get install -y curl wget iptables
+    apt-get update
+
+    echo "Installing minimal dependencies & Network Manager..."
+    # Added network-manager here
+    apt-get install -y curl wget iptables network-manager
 else
-    echo " [SKIP] curl, wget, and iptables are already installed."
+    echo " [SKIP] Tools are already installed."
 fi
 
-# ----------------------------------------------------------------
-# INSTALL DOCKER (Static Binaries)
-# ----------------------------------------------------------------
+echo "Configuring Network Manager..."
+systemctl enable NetworkManager
+
+# IMPORTANT: If wlan0 is defined in /etc/network/interfaces, 
+# NetworkManager will ignore it. We must clear it to allow nmcli to work.
+if [ -f /etc/network/interfaces ]; then
+    echo "Backing up and clearing /etc/network/interfaces..."
+    mv /etc/network/interfaces /etc/network/interfaces.bak
+    # Write a minimal file that only handles localhost
+    echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
+fi
+
+
+
 if ! command -v docker &> /dev/null; then
     echo "Downloading Docker Static Binaries..."
     DOCKER_VERSION="24.0.7"
@@ -100,11 +109,9 @@ echo "root:1234" | chpasswd
 # FINAL CLEANUP & OPTIMIZATION
 # ----------------------------------------------------------------
 
-# Disable Unattended Upgrades (Prevents 100% CPU usage on first boot)
 systemctl disable unattended-upgrades.service || true
 systemctl mask unattended-upgrades.service || true
 
-# Disable 'Wait for Network' (Prevents boot hang if no ethernet cable)
 systemctl disable systemd-networkd-wait-online.service || true
 systemctl mask systemd-networkd-wait-online.service || true
 
