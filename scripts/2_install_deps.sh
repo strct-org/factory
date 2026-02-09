@@ -10,26 +10,30 @@ fi
 
 echo "Entering Chroot to install dependencies..."
 
-# We use EOF (unquoted) to allow variable expansion if needed, 
-# but we escape variables intended for the inner script with backslashes.
 cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 
 # ----------------------------------------------------------------
-# SPEED OPTIMIZATIONS
+# SPEED & STABILITY OPTIMIZATIONS
 # ----------------------------------------------------------------
 
-# 1. Prevent services from trying to start inside Chroot
+# 1. Prevent services from starting
 echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
-# 2. Disable documentation/man-pages
-# FIXED: Correct syntax for apt.conf.d
+# 2. APT CONFIGURATION (CRITICAL FIXES HERE)
+# - APT::Sandbox::User "root": Prevents the freeze at "Scanning..." or "Metadata"
+# - Pipeline-Depth "0": Prevents HTTP connection hangs in QEMU
+# - Excludes: Saves space/time
 cat <<NODOC > /etc/apt/apt.conf.d/01nodoc
 DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb /var/cache/apt/*.bin || true"; };
 APT::Install-Recommends "0";
 APT::Install-Suggests "0";
+APT::Sandbox::User "root";
+Acquire::http::Pipeline-Depth "0";
+Acquire::http::No-Cache "true";
+Acquire::BrokenProxy "true";
 Dir::Ignore-Files-Silently:: "(.save|.distupgrade)$";
 DPkg::Path-Exclude "/usr/share/doc/*";
 DPkg::Path-Exclude "/usr/share/man/*";
@@ -42,6 +46,9 @@ NODOC
 # ----------------------------------------------------------------
 # INSTALLATION
 # ----------------------------------------------------------------
+
+echo "Cleaning stale lists..."
+rm -rf /var/lib/apt/lists/*
 
 echo "Running APT update..."
 apt-get update
@@ -85,8 +92,7 @@ if ! command -v docker &> /dev/null; then
     eatmydata curl -sSL "https://download.docker.com/linux/static/stable/aarch64/docker-\${DOCKER_VERSION}.tgz" -o docker.tgz
 
     echo "Extracting Docker..."
-    # CRITICAL FIX: Use eatmydata on tar. 
-    # Without this, QEMU translates every file write sync, causing the 30min delay.
+    # CRITICAL FIX: Use eatmydata on tar to bypass QEMU disk sync
     eatmydata tar xzf docker.tgz
     
     cp docker/* /usr/bin/
