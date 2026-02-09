@@ -42,20 +42,21 @@ NODOC
 # ----------------------------------------------------------------
 
 echo "Running APT update..."
-# Only nukes lists if standard update fails (Speed improvement)
-apt-get update || (rm -rf /var/lib/apt/lists/* && apt-get update)
+# Use eatmydata if available later, but for now just update
+apt-get update
 
 echo "Installing Basic Tools..."
-# Install these minimal to save space/time
-apt-get install -y --no-install-recommends curl wget iptables ca-certificates
+# Added 'eatmydata' - this is a MAGIC tool for chroot builds. 
+# It disables disk sync during install, making it 10x faster in QEMU.
+apt-get install -y --no-install-recommends eatmydata curl wget ca-certificates
 
-echo "Installing Network Manager (FULL)..."
-# We deliberately allow 'Recommends' here for NetworkManager to ensure 
-# nmcli, wpasupplicant (wifi), and modemmanager are included.
-# We explicitly add wpasupplicant just in case.
-apt-get install -y --install-recommends network-manager wpasupplicant
+echo "Installing Network Manager (MINIMAL)..."
+# 1. Use 'eatmydata' to speed up unpacking
+# 2. Use '--no-install-recommends' to stop installing bloat
+# 3. 'wpasupplicant' is added explicitly so WiFi works (nmcli needs it for wifi)
+eatmydata apt-get install -y --no-install-recommends network-manager wpasupplicant
 
-# Verify nmcli installed successfully
+# Verify nmcli
 if command -v nmcli &> /dev/null; then
     echo "[OK] nmcli successfully installed."
 else
