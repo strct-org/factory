@@ -10,20 +10,22 @@ fi
 
 echo "Entering Chroot to install dependencies..."
 
+# We use EOF (unquoted) to allow variable expansion if needed, 
+# but we escape variables intended for the inner script with backslashes.
 cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 
 # ----------------------------------------------------------------
-# SPEED OPTIMIZATIONS (Keep these!)
+# SPEED OPTIMIZATIONS
 # ----------------------------------------------------------------
 
 # 1. Prevent services from trying to start inside Chroot
 echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
-# 2. Disable documentation/man-pages (Saves ~50% of install time)
-# FIXED: Added correct syntax (DPkg::Path-Exclude, Quotes, and Semicolons)
+# 2. Disable documentation/man-pages
+# FIXED: Correct syntax for apt.conf.d
 cat <<NODOC > /etc/apt/apt.conf.d/01nodoc
 DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb /var/cache/apt/*.bin || true"; };
 APT::Install-Recommends "0";
@@ -42,18 +44,16 @@ NODOC
 # ----------------------------------------------------------------
 
 echo "Running APT update..."
-# Use eatmydata if available later, but for now just update
 apt-get update
 
 echo "Installing Basic Tools..."
-# Added 'eatmydata' - this is a MAGIC tool for chroot builds. 
-# It disables disk sync during install, making it 10x faster in QEMU.
+# Install 'eatmydata' first. This disables fsync() and makes QEMU disk ops 10x faster.
 apt-get install -y --no-install-recommends eatmydata curl wget ca-certificates
 
 echo "Installing Network Manager (MINIMAL)..."
 # 1. Use 'eatmydata' to speed up unpacking
-# 2. Use '--no-install-recommends' to stop installing bloat
-# 3. 'wpasupplicant' is added explicitly so WiFi works (nmcli needs it for wifi)
+# 2. Use '--no-install-recommends' to prevent installing X11/Bloat
+# 3. Explicitly include wpasupplicant for WiFi support
 eatmydata apt-get install -y --no-install-recommends network-manager wpasupplicant
 
 # Verify nmcli
@@ -72,7 +72,7 @@ echo "Configuring Network Manager..."
 systemctl enable NetworkManager
 
 if [ -f /etc/network/interfaces ]; then
-    echo "Backing up /etc/network/interfaces to prevent conflicts..."
+    echo "Backing up /etc/network/interfaces..."
     mv /etc/network/interfaces /etc/network/interfaces.bak
     echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
 fi
@@ -80,10 +80,15 @@ fi
 if ! command -v docker &> /dev/null; then
     echo "Downloading Docker..."
     DOCKER_VERSION="24.0.7"
-    curl -sSL "https://download.docker.com/linux/static/stable/aarch64/docker-\${DOCKER_VERSION}.tgz" -o docker.tgz
+    
+    # CRITICAL FIX: Use eatmydata on curl
+    eatmydata curl -sSL "https://download.docker.com/linux/static/stable/aarch64/docker-\${DOCKER_VERSION}.tgz" -o docker.tgz
 
     echo "Extracting Docker..."
-    tar xzf docker.tgz
+    # CRITICAL FIX: Use eatmydata on tar. 
+    # Without this, QEMU translates every file write sync, causing the 30min delay.
+    eatmydata tar xzf docker.tgz
+    
     cp docker/* /usr/bin/
     rm -rf docker docker.tgz
 
