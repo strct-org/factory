@@ -23,17 +23,18 @@ echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
 # 2. Disable documentation/man-pages (Saves ~50% of install time)
+# FIXED: Added correct syntax (DPkg::Path-Exclude, Quotes, and Semicolons)
 cat <<NODOC > /etc/apt/apt.conf.d/01nodoc
 DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb /var/cache/apt/*.bin || true"; };
 APT::Install-Recommends "0";
 APT::Install-Suggests "0";
 Dir::Ignore-Files-Silently:: "(.save|.distupgrade)$";
-Path-Exclude /usr/share/doc/*
-Path-Exclude /usr/share/man/*
-Path-Exclude /usr/share/groff/*
-Path-Exclude /usr/share/info/*
-Path-Exclude /usr/share/lintian/*
-Path-Exclude /usr/share/linda/*
+DPkg::Path-Exclude "/usr/share/doc/*";
+DPkg::Path-Exclude "/usr/share/man/*";
+DPkg::Path-Exclude "/usr/share/groff/*";
+DPkg::Path-Exclude "/usr/share/info/*";
+DPkg::Path-Exclude "/usr/share/lintian/*";
+DPkg::Path-Exclude "/usr/share/linda/*";
 NODOC
 
 # ----------------------------------------------------------------
