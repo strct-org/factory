@@ -2,6 +2,12 @@
 set -e
 MOUNT_POINT="mnt_root"
 
+# Safety check: Ensure the mount point exists
+if [ ! -d "$MOUNT_POINT" ]; then
+    echo "Error: Directory $MOUNT_POINT does not exist."
+    exit 1
+fi
+
 echo "Entering Chroot to install dependencies..."
 
 cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
@@ -9,14 +15,14 @@ cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 export DEBIAN_FRONTEND=noninteractive
 
 # ----------------------------------------------------------------
-# OPTIMIZATION PREP
+# SPEED OPTIMIZATIONS (Keep these!)
 # ----------------------------------------------------------------
 
-# 1. Prevent services from trying to start inside Chroot (prevents timeouts)
+# 1. Prevent services from trying to start inside Chroot
 echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
-# 2. Prevent installing documentation/man-pages (Saves massive CPU time)
+# 2. Disable documentation/man-pages (Saves ~50% of install time)
 cat <<NODOC > /etc/apt/apt.conf.d/01nodoc
 DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb /var/cache/apt/*.bin || true"; };
 APT::Install-Recommends "0";
@@ -34,22 +40,26 @@ NODOC
 # INSTALLATION
 # ----------------------------------------------------------------
 
-NEEDS_INSTALL=0
-if ! command -v curl &> /dev/null; then NEEDS_INSTALL=1; fi
-if ! command -v wget &> /dev/null; then NEEDS_INSTALL=1; fi
-if ! command -v iptables &> /dev/null; then NEEDS_INSTALL=1; fi
-if ! command -v nmcli &> /dev/null; then NEEDS_INSTALL=1; fi  
+echo "Running APT update..."
+# Only nukes lists if standard update fails (Speed improvement)
+apt-get update || (rm -rf /var/lib/apt/lists/* && apt-get update)
 
-if [ "\$NEEDS_INSTALL" -eq "1" ]; then
-    echo "Running APT update..."
-    # Only update, don't delete lists unless update fails
-    apt-get update || (rm -rf /var/lib/apt/lists/* && apt-get update)
+echo "Installing Basic Tools..."
+# Install these minimal to save space/time
+apt-get install -y --no-install-recommends curl wget iptables ca-certificates
 
-    echo "Installing minimal dependencies..."
-    # --no-install-recommends is CRITICAL for speed
-    apt-get install -y --no-install-recommends curl wget iptables network-manager ca-certificates
+echo "Installing Network Manager (FULL)..."
+# We deliberately allow 'Recommends' here for NetworkManager to ensure 
+# nmcli, wpasupplicant (wifi), and modemmanager are included.
+# We explicitly add wpasupplicant just in case.
+apt-get install -y --install-recommends network-manager wpasupplicant
+
+# Verify nmcli installed successfully
+if command -v nmcli &> /dev/null; then
+    echo "[OK] nmcli successfully installed."
 else
-    echo " [SKIP] Tools are already installed."
+    echo "[ERROR] nmcli failed to install."
+    exit 1
 fi
 
 # ----------------------------------------------------------------
@@ -60,7 +70,7 @@ echo "Configuring Network Manager..."
 systemctl enable NetworkManager
 
 if [ -f /etc/network/interfaces ]; then
-    echo "Backing up /etc/network/interfaces..."
+    echo "Backing up /etc/network/interfaces to prevent conflicts..."
     mv /etc/network/interfaces /etc/network/interfaces.bak
     echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
 fi
@@ -68,7 +78,6 @@ fi
 if ! command -v docker &> /dev/null; then
     echo "Downloading Docker..."
     DOCKER_VERSION="24.0.7"
-    # Added -k (insecure) only if necessary, preferred to use ca-certificates
     curl -sSL "https://download.docker.com/linux/static/stable/aarch64/docker-\${DOCKER_VERSION}.tgz" -o docker.tgz
 
     echo "Extracting Docker..."
@@ -99,8 +108,6 @@ WantedBy=multi-user.target
 SERVICE
 
     systemctl enable docker
-else
-    echo " [SKIP] Docker already installed."
 fi
 
 # ----------------------------------------------------------------
@@ -112,7 +119,6 @@ if ! id "martbul" &>/dev/null; then
     useradd -m -s /bin/bash martbul
 fi
 
-# Batch update passwords (faster than calling chpasswd twice)
 echo "martbul:1234
 root:1234" | chpasswd
 
@@ -122,12 +128,7 @@ usermod -aG sudo,docker martbul
 # CLEANUP
 # ----------------------------------------------------------------
 
-# Disable these services safely
-systemctl disable unattended-upgrades.service 2>/dev/null || true
-systemctl mask unattended-upgrades.service 2>/dev/null || true
-systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
-
-# Remove the optimization blocks so the actual system runs normally
+# Restore system to normal state
 rm /usr/sbin/policy-rc.d
 rm /etc/apt/apt.conf.d/01nodoc
 
@@ -140,4 +141,4 @@ chmod +x $MOUNT_POINT/tmp/install_inside.sh
 chroot $MOUNT_POINT /bin/bash /tmp/install_inside.sh
 rm $MOUNT_POINT/tmp/install_inside.sh
 
-echo "[OK] Dependencies & User Configuration complete."
+echo "[OK] Script Complete."
