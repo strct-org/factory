@@ -2,109 +2,119 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-# Safety check
+# ----------------------------------------------------------------
+# 1. MOUNT FIXES (Crucial for Speed)
+# ----------------------------------------------------------------
 if [ ! -d "$MOUNT_POINT" ]; then
     echo "Error: Directory $MOUNT_POINT does not exist."
     exit 1
 fi
 
-echo "Injecting First-Boot Provisioning Script..."
+echo "Mounting system directories..."
+# We MUST bind mount /dev/pts to stop the 'posix_openpt' 15-minute timeout
+mount --bind /dev "$MOUNT_POINT/dev"
+mount --bind /dev/pts "$MOUNT_POINT/dev/pts"
+mount --bind /proc "$MOUNT_POINT/proc"
+mount --bind /sys "$MOUNT_POINT/sys"
+
+# Ensure /tmp exists
+mkdir -p "$MOUNT_POINT/tmp"
+chmod 1777 "$MOUNT_POINT/tmp"
 
 # ----------------------------------------------------------------
-# 1. CREATE THE SETUP SCRIPT
+# 2. CREATE INSTALLER
 # ----------------------------------------------------------------
-cat <<EOF > $MOUNT_POINT/usr/local/bin/provision_device.sh
+cat <<EOF > $MOUNT_POINT/tmp/install_fast.sh
 #!/bin/bash
-# Log output for debugging
-exec > /var/log/provision.log 2>&1
-
-echo "Starting First Boot Provisioning..."
-
-# --- STEP 1: CREATE USER (Do this FIRST so you can login!) ---
-if ! id "martbul" &>/dev/null; then
-    echo "Creating user martbul..."
-    useradd -m -s /bin/bash martbul
-    echo "martbul:1234" | chpasswd
-    usermod -aG sudo martbul
-    echo "[OK] User created."
-fi
-
-# --- STEP 2: CONFIGURE NETWORK MANAGER (Do this SECOND) ---
-# We enable it now so it can help us get online
-systemctl enable NetworkManager --now
-
-if [ -f /etc/network/interfaces ]; then
-    # Backup interfaces file to let NetworkManager manage the device
-    mv /etc/network/interfaces /etc/network/interfaces.bak
-    echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
-fi
-
-# --- STEP 3: WAIT FOR INTERNET & INSTALL PACKAGES ---
-echo "Waiting for internet connection..."
-
-# Loop for up to 5 minutes waiting for internet
-MAX_RETRIES=30
-COUNT=0
-while ! ping -c1 8.8.8.8 &>/dev/null; do
-    echo "Waiting for internet... (\$COUNT/\$MAX_RETRIES)"
-    sleep 5
-    ((COUNT++))
-    if [ \$COUNT -ge \$MAX_RETRIES ]; then
-        echo "No internet after 2.5 minutes. Skipping package install."
-        # We exit, but do NOT disable the service, so it tries again next boot
-        exit 1
-    fi
-done
-
-echo "Internet found. Installing packages..."
 export DEBIAN_FRONTEND=noninteractive
 
-# Update and Install
-apt-get update
-apt-get install -y --no-install-recommends \
+# SPEED HACK: Disable man-db (The #1 CPU hog in QEMU)
+echo "Man-DB: Disabling auto-update..."
+mkdir -p /var/lib/man-db
+touch /var/lib/man-db/auto-update
+
+# Prevent services from starting
+echo "exit 101" > /usr/sbin/policy-rc.d
+chmod +x /usr/sbin/policy-rc.d
+
+# DEFINE FAST APT FLAGS
+# We pass these directly to commands to GUARANTEE they are used.
+# 1. cnf-Metadata=false -> Stops the 15-minute hang
+# 2. Sandbox::User=root -> Prevents permission freezes
+# 3. Languages=none -> Saves bandwidth
+APT_FLAGS="-o Acquire::IndexTargets::deb::cnf-Metadata=false -o APT::Sandbox::User=root -o Acquire::Languages=none -o Acquire::http::No-Cache=true"
+
+echo "Cleaning old lists..."
+rm -rf /var/lib/apt/lists/*
+
+echo "Running APT Update (Fast Mode)..."
+# We update ONLY 'main' and 'universe' to keep it fast, then restore full list if needed
+apt-get update \$APT_FLAGS
+
+echo "Installing Basic Tools..."
+# Install 'eatmydata' first. It makes unpacking 10x faster.
+apt-get install -y \$APT_FLAGS eatmydata
+
+echo "Installing NetworkManager..."
+# We use eatmydata to install ONLY what you need.
+# NO DOCKER. NO BLOAT.
+eatmydata apt-get install -y --no-install-recommends \$APT_FLAGS \
     network-manager \
     wpasupplicant \
     curl \
     wget \
     ca-certificates \
-    iptables
+    iptables \
+    dnsutils
 
-echo "Provisioning Complete. Self-destructing service..."
-systemctl disable provision_device.service
+# Verify Installation
+if command -v nmcli &> /dev/null; then
+    echo "[OK] nmcli successfully installed."
+else
+    echo "[ERROR] nmcli failed to install."
+    exit 1
+fi
+
+echo "Configuring Network Manager..."
+systemctl enable NetworkManager
+
+# Fix interfaces to not conflict with NM
+if [ -f /etc/network/interfaces ]; then
+    mv /etc/network/interfaces /etc/network/interfaces.bak
+    echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
+fi
+
+echo "Creating User 'martbul'..."
+if ! id "martbul" &>/dev/null; then
+    useradd -m -s /bin/bash martbul
+    echo "martbul:1234" | chpasswd
+    usermod -aG sudo martbul
+fi
+
+echo "Cleaning up..."
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+rm /usr/sbin/policy-rc.d
+rm -f /var/lib/man-db/auto-update
 EOF
 
-# Make the script executable
-chmod +x $MOUNT_POINT/usr/local/bin/provision_device.sh
+# ----------------------------------------------------------------
+# 3. EXECUTE
+# ----------------------------------------------------------------
+chmod +x $MOUNT_POINT/tmp/install_fast.sh
+
+echo "Entering Chroot..."
+chroot $MOUNT_POINT /bin/bash /tmp/install_fast.sh
 
 # ----------------------------------------------------------------
-# 2. CREATE THE SYSTEMD SERVICE
+# 4. CLEANUP
 # ----------------------------------------------------------------
-# CHANGED: We removed 'After=network-online.target' so it runs earlier.
-cat <<EOF > $MOUNT_POINT/etc/systemd/system/provision_device.service
-[Unit]
-Description=First Boot Provisioning
-# Run early, don't wait for full network, so user is created fast
-After=local-fs.target 
+rm $MOUNT_POINT/tmp/install_fast.sh
 
-[Service]
-Type=simple
-ExecStart=/bin/bash /usr/local/bin/provision_device.sh
-# If it fails (no internet), try again later
-Restart=on-failure
-RestartSec=60
+echo "Unmounting..."
+umount "$MOUNT_POINT/dev/pts" || true
+umount "$MOUNT_POINT/dev" || true
+umount "$MOUNT_POINT/proc" || true
+umount "$MOUNT_POINT/sys" || true
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# ----------------------------------------------------------------
-# 3. ENABLE THE SERVICE (MANUALLY)
-# ----------------------------------------------------------------
-mkdir -p $MOUNT_POINT/etc/systemd/system/multi-user.target.wants
-ln -sf /etc/systemd/system/provision_device.service \
-       $MOUNT_POINT/etc/systemd/system/multi-user.target.wants/provision_device.service
-
-echo "[OK] Build Complete."
-echo "Flash the image."
-echo "1. On first boot, you will be able to login as martbul IMMEDIATELY."
-echo "2. The background script will keep trying to connect to install packages."
+echo "[OK] Build Complete. 'nmcli' is now pre-installed."
