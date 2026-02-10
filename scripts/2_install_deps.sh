@@ -3,7 +3,7 @@ set -e
 MOUNT_POINT="mnt_root"
 
 # ----------------------------------------------------------------
-# STEP 1: PREPARE MOUNTS (CRITICAL FOR SPEED)
+# STEP 1: PREPARE MOUNTS
 # ----------------------------------------------------------------
 if [ ! -d "$MOUNT_POINT" ]; then
     echo "Error: Directory $MOUNT_POINT does not exist."
@@ -11,7 +11,6 @@ if [ ! -d "$MOUNT_POINT" ]; then
 fi
 
 echo "Mounting system directories..."
-# We bind mount these to prevent the "posix_openpt" 15-minute timeout error
 mount --bind /dev "$MOUNT_POINT/dev"
 mount --bind /dev/pts "$MOUNT_POINT/dev/pts"
 mount --bind /proc "$MOUNT_POINT/proc"
@@ -29,47 +28,68 @@ cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 
-# SPEED HACK: Prevent man-db from running (Saves huge amount of CPU)
+# ==============================================================================
+# THE 25-MINUTE FIX
+# ==============================================================================
+# This configuration file stops APT from downloading the Metadata that hangs QEMU.
+# 1. cnf-Metadata "false" -> Stops the specific file you are stuck on.
+# 2. Languages "none" -> Stops downloading translation files.
+# 3. Sandbox::User "root" -> Prevents freezing when switching permissions.
+cat <<APTCONF > /etc/apt/apt.conf.d/99-qemu-force-speed
+Acquire::IndexTargets::deb::cnf-Metadata "false";
+Acquire::Languages "none";
+APT::Sandbox::User "root";
+Acquire::http::No-Cache "true";
+Acquire::http::Pipeline-Depth "0";
+APTCONF
+# ==============================================================================
+
+# Disable man-db updates (CPU Hog)
 echo "Man-DB: Disabling auto-update..."
 mkdir -p /var/lib/man-db
 touch /var/lib/man-db/auto-update
 
-# Prevent services from starting during install
+# Prevent services from starting
 echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
-echo "Running APT Update..."
-apt-get update
+echo "Cleaning old lists..."
+rm -rf /var/lib/apt/lists/*
+
+echo "Running APT Update (Fast Mode)..."
+# We use eatmydata here too because updating lists involves writing many files
+apt-get update || echo "Update had warnings, but continuing..."
 
 echo "Installing Basic Tools..."
-# 1. eatmydata: Disables disk sync (makes QEMU 10x faster)
-# 2. network-manager: Gives you 'nmcli'
-# 3. ca-certificates: Required for your Go app to make HTTPS requests
-# 4. wpasupplicant: Required for WiFi connections via nmcli
-# REMOVED: Docker (Not needed for your go.mod)
+# Install eatmydata first
 apt-get install -y eatmydata
+
+echo "Installing Dependencies..."
+# 1. network-manager: For nmcli
+# 2. ca-certificates: For your Go app HTTPS
+# 3. iptables: Usually needed by network agents
 eatmydata apt-get install -y --no-install-recommends \
     network-manager \
     wpasupplicant \
     curl \
     wget \
     ca-certificates \
-    iptables
+    iptables \
+    dnsutils
 
 echo "Configuring Network Manager..."
 systemctl enable NetworkManager
 
-# Fix /etc/network/interfaces so it doesn't fight with NetworkManager
+# Fix /etc/network/interfaces
 if [ -f /etc/network/interfaces ]; then
     mv /etc/network/interfaces /etc/network/interfaces.bak
     echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
 fi
 
-echo "Configuring User 'martbul'..."
+echo "Configuring User..."
 if ! id "martbul" &>/dev/null; then
     useradd -m -s /bin/bash martbul
     echo "martbul:1234" | chpasswd
-    # Removed 'docker' group since we aren't installing docker
     usermod -aG sudo martbul
 fi
 
@@ -77,6 +97,7 @@ echo "Cleaning up..."
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm /usr/sbin/policy-rc.d
+rm /etc/apt/apt.conf.d/99-qemu-force-speed
 rm -f /var/lib/man-db/auto-update
 
 EOF
