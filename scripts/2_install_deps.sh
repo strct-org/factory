@@ -15,18 +15,19 @@ cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 export DEBIAN_FRONTEND=noninteractive
 
 # ----------------------------------------------------------------
-# SPEED & STABILITY OPTIMIZATIONS
+# 1. OPTIMIZATION & CONFIGURATION
 # ----------------------------------------------------------------
 
-# 1. Prevent services from starting
+# Prevent services from starting
 echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
-# 2. APT CONFIGURATION (CRITICAL FIXES HERE)
-# - APT::Sandbox::User "root": Prevents the freeze at "Scanning..." or "Metadata"
-# - Pipeline-Depth "0": Prevents HTTP connection hangs in QEMU
-# - Excludes: Saves space/time
-cat <<NODOC > /etc/apt/apt.conf.d/01nodoc
+# Configure APT for Speed and Reliability
+# - Disable Docs/Man pages
+# - Disable 'Command-Not-Found' metadata (Fixes the 15min hang)
+# - Disable Translations
+# - Use Root sandbox to prevent permission freezes
+cat <<NODOC > /etc/apt/apt.conf.d/99optimizations
 DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb /var/cache/apt/*.bin || true"; };
 APT::Install-Recommends "0";
 APT::Install-Suggests "0";
@@ -34,6 +35,8 @@ APT::Sandbox::User "root";
 Acquire::http::Pipeline-Depth "0";
 Acquire::http::No-Cache "true";
 Acquire::BrokenProxy "true";
+Acquire::Languages "none";
+Acquire::IndexTargets::deb::cnf-Metadata "false";
 Dir::Ignore-Files-Silently:: "(.save|.distupgrade)$";
 DPkg::Path-Exclude "/usr/share/doc/*";
 DPkg::Path-Exclude "/usr/share/man/*";
@@ -44,7 +47,7 @@ DPkg::Path-Exclude "/usr/share/linda/*";
 NODOC
 
 # ----------------------------------------------------------------
-# INSTALLATION
+# 2. INSTALLATION
 # ----------------------------------------------------------------
 
 echo "Cleaning stale lists..."
@@ -54,77 +57,47 @@ echo "Running APT update..."
 apt-get update
 
 echo "Installing Basic Tools..."
-# Install 'eatmydata' first. This disables fsync() and makes QEMU disk ops 10x faster.
+# Install 'eatmydata' first. It is CRITICAL for speed in QEMU.
 apt-get install -y --no-install-recommends eatmydata curl wget ca-certificates
 
-echo "Installing Network Manager (MINIMAL)..."
-# 1. Use 'eatmydata' to speed up unpacking
-# 2. Use '--no-install-recommends' to prevent installing X11/Bloat
-# 3. Explicitly include wpasupplicant for WiFi support
-eatmydata apt-get install -y --no-install-recommends network-manager wpasupplicant
+echo "Installing Network Manager & Docker..."
+# COMBINED INSTALLATION FOR SPEED
+# 1. network-manager + wpasupplicant (for WiFi)
+# 2. docker.io (Installs via apt in 30s vs 20mins for manual tar extraction)
+eatmydata apt-get install -y --no-install-recommends \
+    network-manager \
+    wpasupplicant \
+    docker.io
 
-# Verify nmcli
-if command -v nmcli &> /dev/null; then
-    echo "[OK] nmcli successfully installed."
+# Verify Installations
+if command -v nmcli &> /dev/null && command -v docker &> /dev/null; then
+    echo "[OK] nmcli and docker installed successfully."
 else
-    echo "[ERROR] nmcli failed to install."
+    echo "[ERROR] Installation failed."
     exit 1
 fi
 
 # ----------------------------------------------------------------
-# CONFIGURATION
+# 3. CONFIGURATION
 # ----------------------------------------------------------------
 
 echo "Configuring Network Manager..."
 systemctl enable NetworkManager
 
+# Fix /etc/network/interfaces to not conflict with NM
 if [ -f /etc/network/interfaces ]; then
-    echo "Backing up /etc/network/interfaces..."
     mv /etc/network/interfaces /etc/network/interfaces.bak
     echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
 fi
 
-if ! command -v docker &> /dev/null; then
-    echo "Downloading Docker..."
-    DOCKER_VERSION="24.0.7"
-    
-    # CRITICAL FIX: Use eatmydata on curl
-    eatmydata curl -sSL "https://download.docker.com/linux/static/stable/aarch64/docker-\${DOCKER_VERSION}.tgz" -o docker.tgz
-
-    echo "Extracting Docker..."
-    # CRITICAL FIX: Use eatmydata on tar to bypass QEMU disk sync
-    eatmydata tar xzf docker.tgz
-    
-    cp docker/* /usr/bin/
-    rm -rf docker docker.tgz
-
-    groupadd -f docker
-
-    echo "Creating Docker Systemd Service..."
-    cat <<SERVICE > /etc/systemd/system/docker.service
-[Unit]
-Description=Docker Application Container Engine
-Documentation=https://docs.docker.com
-After=network-online.target firewalld.service
-Wants=network-online.target
-
-[Service]
-Type=notify
-ExecStart=/usr/bin/dockerd
-ExecReload=/bin/kill -s HUP \$MAINPID
-TimeoutSec=0
-RestartSec=2
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-    systemctl enable docker
-fi
+echo "Configuring Docker..."
+# Docker.io from apt already creates the service, just enable it
+systemctl enable docker
+# Add the group just in case
+groupadd -f docker
 
 # ----------------------------------------------------------------
-# USER CONFIGURATION
+# 4. USER CONFIGURATION
 # ----------------------------------------------------------------
 echo "Configuring User 'martbul'..."
 
@@ -138,14 +111,14 @@ root:1234" | chpasswd
 usermod -aG sudo,docker martbul
 
 # ----------------------------------------------------------------
-# CLEANUP
+# 5. CLEANUP
 # ----------------------------------------------------------------
 
+echo "Cleaning up..."
 # Restore system to normal state
 rm /usr/sbin/policy-rc.d
-rm /etc/apt/apt.conf.d/01nodoc
+rm /etc/apt/apt.conf.d/99optimizations
 
-echo "Cleaning up APT cache..."
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 EOF
