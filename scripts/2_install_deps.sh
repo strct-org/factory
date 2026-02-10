@@ -2,129 +2,121 @@
 set -e
 MOUNT_POINT="mnt_root"
 
-# Safety check: Ensure the mount point exists
+# ----------------------------------------------------------------
+# STEP 1: PREPARE MOUNTS (CRITICAL FIX)
+# ----------------------------------------------------------------
+# You must bind-mount these for APT to work fast in QEMU
 if [ ! -d "$MOUNT_POINT" ]; then
     echo "Error: Directory $MOUNT_POINT does not exist."
     exit 1
 fi
 
-echo "Entering Chroot to install dependencies..."
+echo "Mounting system directories..."
+# We assume the root partition is already mounted to $MOUNT_POINT
+# We add these specifically to fix the 'posix_openpt' 30-min lag:
+mount --bind /dev "$MOUNT_POINT/dev"
+mount --bind /dev/pts "$MOUNT_POINT/dev/pts"
+mount --bind /proc "$MOUNT_POINT/proc"
+mount --bind /sys "$MOUNT_POINT/sys"
+
+# Ensure /tmp exists inside
+mkdir -p "$MOUNT_POINT/tmp"
+chmod 1777 "$MOUNT_POINT/tmp"
+
+# ----------------------------------------------------------------
+# STEP 2: CREATE THE INSTALLER SCRIPT
+# ----------------------------------------------------------------
+# This is the "Raspberry Pi Style" simple script, with QEMU speed hacks injected.
 
 cat <<EOF > $MOUNT_POINT/tmp/install_inside.sh
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 
-# ----------------------------------------------------------------
-# 1. OPTIMIZATION & CONFIGURATION
-# ----------------------------------------------------------------
-
+# SPEED HACK 1: Disable man-db database updates (The #1 CPU hog in QEMU)
+echo "Man-DB: Disabling auto-update..."
+if [ -d /var/lib/man-db ]; then
+    touch /var/lib/man-db/auto-update
+fi
 # Prevent services from starting
 echo "exit 101" > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
-# Configure APT for Speed and Reliability
-# - Disable Docs/Man pages
-# - Disable 'Command-Not-Found' metadata (Fixes the 15min hang)
-# - Disable Translations
-# - Use Root sandbox to prevent permission freezes
-cat <<NODOC > /etc/apt/apt.conf.d/99optimizations
-DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb /var/cache/apt/*.bin || true"; };
-APT::Install-Recommends "0";
-APT::Install-Suggests "0";
-APT::Sandbox::User "root";
-Acquire::http::Pipeline-Depth "0";
-Acquire::http::No-Cache "true";
-Acquire::BrokenProxy "true";
-Acquire::Languages "none";
-Acquire::IndexTargets::deb::cnf-Metadata "false";
-Dir::Ignore-Files-Silently:: "(.save|.distupgrade)$";
-DPkg::Path-Exclude "/usr/share/doc/*";
-DPkg::Path-Exclude "/usr/share/man/*";
-DPkg::Path-Exclude "/usr/share/groff/*";
-DPkg::Path-Exclude "/usr/share/info/*";
-DPkg::Path-Exclude "/usr/share/lintian/*";
-DPkg::Path-Exclude "/usr/share/linda/*";
-NODOC
-
-# ----------------------------------------------------------------
-# 2. INSTALLATION
-# ----------------------------------------------------------------
-
-echo "Cleaning stale lists..."
-rm -rf /var/lib/apt/lists/*
-
-echo "Running APT update..."
+echo "--------------------------------------"
+echo "PHASE 1: Update & Install Helpers"
+echo "--------------------------------------"
+# We need to update to get the package lists
 apt-get update
 
-echo "Installing Basic Tools..."
-# Install 'eatmydata' first. It is CRITICAL for speed in QEMU.
-apt-get install -y --no-install-recommends eatmydata curl wget ca-certificates
+# Install 'eatmydata' first. 
+# This tool disables disk sync, making installation 10x faster in QEMU.
+apt-get install -y eatmydata
 
-echo "Installing Network Manager & Docker..."
-# COMBINED INSTALLATION FOR SPEED
-# 1. network-manager + wpasupplicant (for WiFi)
-# 2. docker.io (Installs via apt in 30s vs 20mins for manual tar extraction)
+echo "--------------------------------------"
+echo "PHASE 2: Install Docker & NetworkManager"
+echo "--------------------------------------"
+
+# We use 'eatmydata' to wrap the command. 
+# This makes it behave like the Raspberry Pi script but safely bypasses QEMU I/O lag.
 eatmydata apt-get install -y --no-install-recommends \
     network-manager \
     wpasupplicant \
-    docker.io
+    curl \
+    wget \
+    ca-certificates \
+    docker.io 
 
-# Verify Installations
-if command -v nmcli &> /dev/null && command -v docker &> /dev/null; then
-    echo "[OK] nmcli and docker installed successfully."
+# Verify installs
+if command -v nmcli >/dev/null && command -v docker >/dev/null; then
+    echo "[OK] Docker and NetworkManager installed."
 else
-    echo "[ERROR] Installation failed."
+    echo "[ERROR] Install failed."
     exit 1
 fi
 
-# ----------------------------------------------------------------
-# 3. CONFIGURATION
-# ----------------------------------------------------------------
+echo "--------------------------------------"
+echo "PHASE 3: Configuration"
+echo "--------------------------------------"
 
-echo "Configuring Network Manager..."
+# Enable Services
 systemctl enable NetworkManager
-
-# Fix /etc/network/interfaces to not conflict with NM
-if [ -f /etc/network/interfaces ]; then
-    mv /etc/network/interfaces /etc/network/interfaces.bak
-    echo -e "auto lo\niface lo inet loopback" > /etc/network/interfaces
-fi
-
-echo "Configuring Docker..."
-# Docker.io from apt already creates the service, just enable it
 systemctl enable docker
-# Add the group just in case
-groupadd -f docker
 
-# ----------------------------------------------------------------
-# 4. USER CONFIGURATION
-# ----------------------------------------------------------------
-echo "Configuring User 'martbul'..."
-
+# Create User
 if ! id "martbul" &>/dev/null; then
     useradd -m -s /bin/bash martbul
+    echo "martbul:1234" | chpasswd
+    usermod -aG sudo,docker martbul
+    echo "[OK] User martbul created."
 fi
 
-echo "martbul:1234
-root:1234" | chpasswd
-
-usermod -aG sudo,docker martbul
-
-# ----------------------------------------------------------------
-# 5. CLEANUP
-# ----------------------------------------------------------------
-
+# Cleanup
 echo "Cleaning up..."
-# Restore system to normal state
-rm /usr/sbin/policy-rc.d
-rm /etc/apt/apt.conf.d/99optimizations
-
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+rm /usr/sbin/policy-rc.d
+# Re-enable man-db for the final system
+rm -f /var/lib/man-db/auto-update
+
 EOF
 
+# ----------------------------------------------------------------
+# STEP 3: EXECUTE
+# ----------------------------------------------------------------
+
 chmod +x $MOUNT_POINT/tmp/install_inside.sh
+
+echo "Entering Chroot..."
 chroot $MOUNT_POINT /bin/bash /tmp/install_inside.sh
+
+# ----------------------------------------------------------------
+# STEP 4: CLEANUP MOUNTS
+# ----------------------------------------------------------------
 rm $MOUNT_POINT/tmp/install_inside.sh
 
-echo "[OK] Script Complete."
+echo "Unmounting system directories..."
+umount "$MOUNT_POINT/dev/pts" || true
+umount "$MOUNT_POINT/dev" || true
+umount "$MOUNT_POINT/proc" || true
+umount "$MOUNT_POINT/sys" || true
+
+echo "[OK] Build Complete."
