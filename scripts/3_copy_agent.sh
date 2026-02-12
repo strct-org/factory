@@ -32,17 +32,23 @@ AUTH_TOKEN=$AUTH_TOKEN
 EOF
 chmod 600 "$TARGET_DIR/.env"
 
+# ---------------------------------------------------------
+# CRITICAL FIX: SERVICE TIMING
+# ---------------------------------------------------------
 echo "Creating Service File..."
 cat <<EOF > strct_agent.service
 [Unit]
 Description=Strct Agent
-After=network-online.target docker.service
-Wants=network-online.target docker.service
+# Wait for NM to be fully up. 'network-online' is often not enough.
+After=network.target NetworkManager.service
+Requires=NetworkManager.service
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/etc/strct
+# Add a delay to allow Broadcom Wi-Fi firmware to initialize (Prevents Error -52)
+ExecStartPre=/bin/sleep 5
 ExecStart=/usr/local/bin/cloud-agent
 Restart=always
 RestartSec=5s
@@ -58,10 +64,9 @@ chroot $MOUNT_POINT systemctl enable strct_agent.service
 # CRITICAL FIX: Disable Cloud-Init Resize
 # ---------------------------------------------------------
 # We already resized the partition in Step 1 using 'parted'.
-# If cloud-init tries to do it again, it often fails/hangs.
 echo "Disabling Cloud-Init Disk Setup..."
 echo "datasource_list: [ None ]" > $MOUNT_POINT/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
-# This specific file tells cloud-init not to mess with disks
+
 echo "cloud_init_modules:
  - migrator
  - bootcmd
@@ -77,4 +82,4 @@ echo "cloud_init_modules:
  - ssh
 " > $MOUNT_POINT/etc/cloud/cloud.cfg.d/99-disable-resize.cfg
 
-echo "[OK] Agent baked in & Cloud-Init optimized."
+echo "[OK] Agent baked in & Service timing optimized."
