@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 IMAGE_FILE="../work_image.img"
 OUTPUT_FILE="../strct-release-v1.img"
@@ -9,13 +9,10 @@ echo "Syncing filesystem..."
 sync
 
 echo "Unmounting image..."
-# Lazy unmount everything under the mountpoint
-umount -R $MOUNT_POINT || true
+umount -R "$MOUNT_POINT" || true
 
-# Detach loop devices
 losetup -D
 
-echo "Finalizing image..."
 sync
 mv "$IMAGE_FILE" "$OUTPUT_FILE"
 
