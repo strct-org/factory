@@ -21,8 +21,10 @@ echo "Detaching all loop devices..."
 losetup -D
 
 # ---------------------------------------------------------------------------
-# Shrink the filesystem.
-# The old script just moved the file, leaving ~2GB of empty space.
+# Shrink the filesystem and image.
+# parted -s still shows an interactive "are you sure?" prompt when shrinking
+# a partition — even in script mode. We avoid parted entirely for the resize
+# step and use fdisk instead, which is fully scriptable with no prompts.
 # ---------------------------------------------------------------------------
 echo "Shrinking filesystem..."
 LOOP_DEV=$(losetup -fP --show "$IMAGE_FILE")
@@ -33,33 +35,53 @@ e2fsck -f -y "${LOOP_DEV}p2"
 echo "  Shrinking ext4 to minimum size..."
 resize2fs -M "${LOOP_DEV}p2"
 
-# Calculate exact byte size of the shrunk partition
+# Read the new partition dimensions after shrinking
 BLOCK_SIZE=$(tune2fs -l "${LOOP_DEV}p2" | awk '/^Block size:/{print $3}')
 BLOCK_COUNT=$(tune2fs -l "${LOOP_DEV}p2" | awk '/^Block count:/{print $3}')
-P2_START=$(parted -m "$IMAGE_FILE" unit B print \
-    | awk -F: '/^2:/{gsub("B",""); print $2}')
+FS_BYTES=$(( BLOCK_SIZE * BLOCK_COUNT ))
 
-FS_SIZE=$(( BLOCK_SIZE * BLOCK_COUNT ))
-# Add 1 MiB alignment buffer so parted doesn't complain
-NEW_END=$(( P2_START + FS_SIZE + 1048576 ))
-NEW_IMG_SIZE=$(( NEW_END + 512 ))
+# Get the sector size and p2 start sector from fdisk
+SECTOR_SIZE=$(fdisk -l "$IMAGE_FILE" | awk '/^Sector size/{print $4}')
+P2_START_SECTOR=$(fdisk -l "$IMAGE_FILE" | awk '/p2/{print $2}')
 
-echo "  P2 start:    ${P2_START} B"
-echo "  FS size:     ${FS_SIZE} B"
-echo "  New P2 end:  ${NEW_END} B"
-echo "  New img:     $(( NEW_IMG_SIZE / 1024 / 1024 )) MB"
+# Calculate new p2 end sector (round up to include all fs blocks)
+P2_END_SECTOR=$(( P2_START_SECTOR + (FS_BYTES / SECTOR_SIZE) + 2048 ))
+NEW_IMG_SECTORS=$(( P2_END_SECTOR + 1 ))
+NEW_IMG_BYTES=$(( NEW_IMG_SECTORS * SECTOR_SIZE ))
 
-# parted -s = script mode (no interactive prompts, no "are you sure?")
-# This is what was causing the "Error: Process completed with exit code 1" —
-# parted was waiting for user input that never came in CI.
-echo "  Resizing partition table (script mode, no prompts)..."
-parted -s "$IMAGE_FILE" resizepart 2 "${NEW_END}B"
+echo "  Sector size:      $SECTOR_SIZE B"
+echo "  P2 start sector:  $P2_START_SECTOR"
+echo "  New P2 end sector: $P2_END_SECTOR"
+echo "  New image size:   $(( NEW_IMG_BYTES / 1024 / 1024 )) MB"
 
+# Detach the loop device before modifying the partition table
 losetup -d "$LOOP_DEV"
 sync
 
-echo "  Truncating image file..."
-truncate -s "$NEW_IMG_SIZE" "$IMAGE_FILE"
+# Rewrite partition 2 using fdisk in batch/heredoc mode — no prompts at all.
+# d = delete partition, n = new partition, p = primary, keep same start,
+# set new end sector, w = write.
+echo "  Rewriting partition table with fdisk (no prompts)..."
+fdisk "$IMAGE_FILE" << FDISK_CMDS
+d
+2
+n
+p
+2
+$P2_START_SECTOR
+$P2_END_SECTOR
+w
+FDISK_CMDS
+
+# Truncate the image file itself to the new calculated size
+echo "  Truncating image file to $(( NEW_IMG_BYTES / 1024 / 1024 )) MB..."
+truncate -s "$NEW_IMG_BYTES" "$IMAGE_FILE"
+
+# Final fsck to make sure everything is consistent after partition table rewrite
+LOOP_DEV=$(losetup -fP --show "$IMAGE_FILE")
+echo "  Final fsck..."
+e2fsck -f -y "${LOOP_DEV}p2" || true
+losetup -d "$LOOP_DEV"
 
 echo "Finalizing..."
 mv "$IMAGE_FILE" "$OUTPUT_FILE"
