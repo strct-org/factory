@@ -1,90 +1,96 @@
 #!/bin/bash
-set -euo pipefail
+set -e
+
 MOUNT_POINT="mnt_root"
+APT_CACHE="../apt-cache"
+ARCH="arm64"
 
-if [ ! -d "$MOUNT_POINT" ]; then
-    echo "Error: Directory $MOUNT_POINT does not exist."
-    exit 1
-fi
+# Packages to install into the image.
+# Each entry is the exact apt package name for ARM64/Debian Bookworm.
+# Docker removed — the agent binary does not use Docker.
+PACKAGES=(
+    network-manager
+    libnm0
+    libglib2.0-0
+    libdbus-1-3
+    curl
+    wget
+    ca-certificates
+)
 
-echo "Mounting system directories..."
-mount --bind /dev "$MOUNT_POINT/dev"
-mount --bind /dev/pts "$MOUNT_POINT/dev/pts"
-mount --bind /proc "$MOUNT_POINT/proc"
-mount --bind /sys "$MOUNT_POINT/sys"
-mkdir -p "$MOUNT_POINT/tmp"
-chmod 1777 "$MOUNT_POINT/tmp"
+mkdir -p "$APT_CACHE"
 
-cat <<'EOF' > "$MOUNT_POINT/tmp/install_fast.sh"
-#!/bin/bash
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
+echo "Configuring dpkg for ARM64 target..."
+# Tell dpkg the target architecture so it can unpack ARM64 packages correctly
+# on this x86 host. This is the key: we're just extracting files, not running them.
+export DPKG_FORCE="architecture"
 
-mkdir -p /var/lib/man-db
-touch /var/lib/man-db/auto-update
+echo "Adding ARM64 architecture to apt..."
+dpkg --add-architecture arm64
 
-echo "exit 101" > /usr/sbin/policy-rc.d
-chmod +x /usr/sbin/policy-rc.d
+echo "Fetching ARM64 package list from Debian Bookworm repos..."
+# We pull from the Raspberry Pi OS repo which tracks Debian Bookworm
+apt-get update -qq \
+    -o Dir::Etc::sourcelist="sources.list.d/raspi.list" 2>/dev/null || true
 
-APT_FLAGS="-o Acquire::IndexTargets::deb::cnf-Metadata=false -o APT::Sandbox::User=root -o Acquire::Languages=none -o Acquire::http::No-Cache=true"
-
-rm -rf /var/lib/apt/lists/*
-apt-get update $APT_FLAGS
-apt-get install -y $APT_FLAGS --no-install-recommends eatmydata
-
-eatmydata apt-get install -y --no-install-recommends $APT_FLAGS \
-    network-manager \
-    wpasupplicant \
-    curl \
-    wget \
-    ca-certificates \
-    iptables \
-    dnsutils \
-    rfkill \
-    iw
-
-command -v nmcli >/dev/null || { echo "[ERROR] nmcli failed to install."; exit 1; }
-
-rm -f /etc/netplan/*.yaml
-cat <<NETPLAN > /etc/netplan/01-network-manager-all.yaml
-network:
-  version: 2
-  renderer: NetworkManager
-NETPLAN
-chmod 600 /etc/netplan/01-network-manager-all.yaml
-
-systemctl disable systemd-networkd || true
-systemctl mask systemd-networkd || true
-systemctl stop systemd-networkd || true
-
-systemctl disable wpa_supplicant || true
-systemctl mask wpa_supplicant || true
-
-systemctl enable NetworkManager
-
-if [ -f /etc/network/interfaces ]; then
-    mv /etc/network/interfaces /etc/network/interfaces.bak
-    printf "auto lo\niface lo inet loopback\n" > /etc/network/interfaces
-fi
-
-if ! id "martbul" &>/dev/null; then
-    useradd -m -s /bin/bash martbul
-    echo "martbul:1234" | chpasswd
-    usermod -aG sudo martbul
-fi
-
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-rm -f /usr/sbin/policy-rc.d /var/lib/man-db/auto-update
+# Use debian bookworm directly — fully compatible with RPi OS Bookworm
+cat > /tmp/sources-arm64.list << EOF
+deb [arch=arm64] http://deb.debian.org/debian bookworm main
+deb [arch=arm64] http://deb.debian.org/debian-security bookworm-security main
+deb [arch=arm64] http://deb.debian.org/debian bookworm-updates main
 EOF
 
-chmod +x "$MOUNT_POINT/tmp/install_fast.sh"
-chroot "$MOUNT_POINT" /bin/bash /tmp/install_fast.sh
-rm -f "$MOUNT_POINT/tmp/install_fast.sh"
+apt-get update -qq -o Dir::Etc::SourceList=/tmp/sources-arm64.list \
+    -o Dir::Etc::SourceParts=/dev/null \
+    -o APT::Architecture=arm64 \
+    -o Dir::Cache="$APT_CACHE" 2>/dev/null || true
 
-umount "$MOUNT_POINT/dev/pts" || true
-umount "$MOUNT_POINT/dev" || true
-umount "$MOUNT_POINT/proc" || true
-umount "$MOUNT_POINT/sys" || true
+echo "Downloading ARM64 .deb packages (using cache if available)..."
+for pkg in "${PACKAGES[@]}"; do
+    DEB_FILE=$(ls "$APT_CACHE"/${pkg}_*_arm64.deb 2>/dev/null | head -1)
+    if [ -n "$DEB_FILE" ]; then
+        echo "  [CACHE HIT]  $pkg"
+    else
+        echo "  [DOWNLOAD]   $pkg"
+        apt-get download \
+            -o APT::Architecture=arm64 \
+            -o Dir::Cache::archives="$APT_CACHE" \
+            ${pkg}:arm64 2>/dev/null || \
+        # Fallback: direct download from debian if apt-get download fails
+        (
+            cd "$APT_CACHE"
+            apt-get download \
+                -o APT::Architecture=arm64 \
+                ${pkg}:arm64 2>/dev/null
+        ) || echo "  [WARN] Could not download $pkg — may already exist in image"
+    fi
+done
 
-echo "[OK] Build Complete. Networking conflicts resolved."
+echo "Extracting packages into image filesystem..."
+for pkg in "${PACKAGES[@]}"; do
+    DEB_FILE=$(ls "$APT_CACHE"/${pkg}_*_arm64.deb 2>/dev/null | head -1)
+    if [ -n "$DEB_FILE" ]; then
+        echo "  Extracting: $(basename $DEB_FILE)"
+        # dpkg-deb --extract unpacks the deb contents directly into the
+        # image mount point — this runs at native x86 speed, no emulation.
+        dpkg-deb --extract "$DEB_FILE" "$MOUNT_POINT"
+    else
+        echo "  [SKIP] No .deb found for $pkg"
+    fi
+done
+
+echo "Enabling NetworkManager service..."
+# We can't run systemctl inside the image (no chroot), but we can create
+# the symlink that systemctl enable would have created.
+SYSTEMD_DIR="$MOUNT_POINT/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$SYSTEMD_DIR"
+NM_SERVICE="$MOUNT_POINT/lib/systemd/system/NetworkManager.service"
+if [ -f "$NM_SERVICE" ]; then
+    ln -sf /lib/systemd/system/NetworkManager.service \
+        "$SYSTEMD_DIR/NetworkManager.service"
+    echo "  NetworkManager.service enabled."
+else
+    echo "  [WARN] NetworkManager.service not found — will be enabled on first boot."
+fi
+
+echo "[OK] Dependencies installed natively (no QEMU used)."

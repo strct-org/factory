@@ -1,5 +1,6 @@
 #!/bin/bash
-set -euo pipefail
+set -e
+set -o pipefail
 
 LOG_FILE="build.log"
 
@@ -17,24 +18,32 @@ fi
 
 chmod +x 1_mount.sh 2_install_deps.sh 3_copy_agent.sh 4_shrink.sh
 
-echo "Starting Orange Pi Build Process..." | tee "$LOG_FILE"
+echo "Starting Factory Build Process..." | tee $LOG_FILE
 
 print_step "0" "CHECKING HOST REQUIREMENTS"
-export DEBIAN_FRONTEND=noninteractive
+
+# We no longer need qemu-user-static or binfmt-support —
+# ARM64 packages are extracted natively on x86, no emulation.
 apt-get update -qq
-apt-get install -y -qq eatmydata parted qemu-user-static binfmt-support wget curl udev | tee -a "$LOG_FILE"
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    parted \
+    dpkg-dev \
+    wget \
+    curl | tee -a $LOG_FILE
+
+echo "[OK] Host environment is ready." | tee -a $LOG_FILE
 
 print_step "1" "MOUNTING AND EXPANDING IMAGE"
-./1_mount.sh | tee -a "$LOG_FILE"
+./1_mount.sh | tee -a $LOG_FILE
 
-print_step "2" "INSTALLING DEPENDENCIES"
-./2_install_deps.sh | tee -a "$LOG_FILE"
+print_step "2" "INSTALLING DEPENDENCIES (native deb extraction, no QEMU)"
+./2_install_deps.sh | tee -a $LOG_FILE
 
 print_step "3" "INSTALLING AGENT & CONFIG"
-./3_copy_agent.sh | tee -a "$LOG_FILE"
+./3_copy_agent.sh | tee -a $LOG_FILE
 
-print_step "4" "CLEANUP AND FINALIZE"
-./4_shrink.sh | tee -a "$LOG_FILE"
+print_step "4" "CLEANUP, SHRINK AND FINALIZE"
+./4_shrink.sh | tee -a $LOG_FILE
 
 echo ""
 echo "[SUCCESS] BUILD COMPLETE."

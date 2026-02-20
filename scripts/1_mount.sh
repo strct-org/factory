@@ -1,7 +1,7 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-SOURCE_IMAGE="../orangepi.img"
+SOURCE_IMAGE="../raspberrypi.img"
 WORK_IMAGE="../work_image.img"
 MOUNT_POINT="mnt_root"
 
@@ -11,56 +11,42 @@ if [ ! -f "$SOURCE_IMAGE" ]; then
 fi
 
 echo "Creating working copy of image..."
-cp --reflink=auto "$SOURCE_IMAGE" "$WORK_IMAGE"
+cp "$SOURCE_IMAGE" "$WORK_IMAGE"
 
 echo "Adding 2GB of space to image..."
-truncate -s +2G "$WORK_IMAGE"
+dd if=/dev/zero bs=1G count=2 >> "$WORK_IMAGE"
 
-echo "Fixing GPT partition table (moving backup header to end)..."
-sgdisk -e "$WORK_IMAGE"
+echo "Resizing partition table..."
+parted -s "$WORK_IMAGE" resizepart 2 100%
+
+echo "Creating mount directory..."
+mkdir -p $MOUNT_POINT
 
 echo "Setting up loop device..."
 LOOP_DEV=$(losetup -fP --show "$WORK_IMAGE")
 echo "Image mapped to $LOOP_DEV"
 
-echo "Detecting Root partition..."
-ROOT_PART_NUM=$(parted -m "$LOOP_DEV" unit B print | tail -n +3 | sort -t: -k4 -nr | head -n1 | cut -d: -f1)
-ROOT_DEV="${LOOP_DEV}p${ROOT_PART_NUM}"
+echo "Expanding filesystem to fill partition..."
+e2fsck -f -y "${LOOP_DEV}p2" || true
+resize2fs "${LOOP_DEV}p2"
 
-echo "Detected Root Partition: $ROOT_DEV (Partition $ROOT_PART_NUM)"
+echo "Mounting root partition (p2)..."
+mount "${LOOP_DEV}p2" $MOUNT_POINT
 
-echo "Resizing partition $ROOT_PART_NUM to 100%..."
-parted -s "$WORK_IMAGE" resizepart "$ROOT_PART_NUM" 100%
-partprobe "$LOOP_DEV"
-
-echo "Expanding filesystem..."
-e2fsck -f -y "$ROOT_DEV" || true
-resize2fs "$ROOT_DEV"
-
-echo "Creating mount directory..."
-mkdir -p "$MOUNT_POINT"
-
-echo "Mounting Root partition..."
-mount "$ROOT_DEV" "$MOUNT_POINT"
-
-if [ -z "$(ls -A "$MOUNT_POINT/boot")" ]; then
-    echo "Boot directory is empty. Checking for separate boot partition..."
-    if [ "$ROOT_PART_NUM" -eq "2" ] && [ -b "${LOOP_DEV}p1" ]; then
-         echo "Mounting p1 to /boot..."
-         mount "${LOOP_DEV}p1" "$MOUNT_POINT/boot"
-    fi
+if [ -d "$MOUNT_POINT/boot/firmware" ]; then
+    echo "Detected Bookworm layout — mounting boot to /boot/firmware..."
+    mount "${LOOP_DEV}p1" $MOUNT_POINT/boot/firmware
+else
+    echo "Detected Bullseye/Legacy layout — mounting boot to /boot..."
+    mount "${LOOP_DEV}p1" $MOUNT_POINT/boot
 fi
 
-echo "Binding system directories..."
-mount --bind /dev "$MOUNT_POINT/dev"
-mount --bind /proc "$MOUNT_POINT/proc"
-mount --bind /sys "$MOUNT_POINT/sys"
+# NOTE: We do NOT bind-mount /dev, /proc, /sys or inject QEMU here.
+# The new 2_install_deps.sh extracts .deb files natively on the host
+# using dpkg-deb — no chroot execution required. This is why the build
+# is fast: no ARM64 emulation at any point.
 
-echo "Injecting QEMU for ARM64..."
-cp /usr/bin/qemu-aarch64-static "$MOUNT_POINT/usr/bin/"
-
-echo "Copying DNS resolver..."
-rm -f "$MOUNT_POINT/etc/resolv.conf"
-cp /etc/resolv.conf "$MOUNT_POINT/etc/resolv.conf"
+echo "Copying DNS resolver for any host-side operations..."
+cp /etc/resolv.conf $MOUNT_POINT/etc/resolv.conf
 
 echo "[OK] Image mounted and expanded at $MOUNT_POINT"

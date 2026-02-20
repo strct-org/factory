@@ -1,81 +1,96 @@
-name: Build Orange Pi 3B Image
+name: Build Factory Image
 
 on:
   workflow_dispatch:
     inputs:
       agent_version:
-        description: Agent Version to install
+        description: 'Agent Version to install'
         required: true
-        default: v1.0.11
-
-env:
-  FRP_VERSION: 0.54.0
-  IMAGE_URL: https://github.com/Joshua-Riek/ubuntu-rockchip/releases/latest/download/ubuntu-24.04-preinstalled-server-arm64-orangepi-3b.img.xz
+        default: 'v1.0.3'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Checkout Factory Scripts
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Restore cached base image
-        id: cache-base-image
+      # -----------------------------------------------------------------------
+      # Cache the base RPi image — it never changes for a fixed date/version
+      # -----------------------------------------------------------------------
+      - name: Cache Raspberry Pi base image
+        id: cache-rpios
         uses: actions/cache@v4
         with:
-          path: |
-            orangepi.img
-            orangepi.img.xz
-          key: opi3b-base-image-${{ runner.os }}-${{ env.IMAGE_URL }}
+          path: rpios.img.xz
+          key: rpios-2023-12-11-bookworm-arm64-lite
 
-      - name: Download Agent from Release
-        uses: robinraju/release-downloader@v1
-        with:
-          repository: strct-org/strct
-          tag: ${{ inputs.agent_version }}
-          fileName: strct-agent-arm64
-
-      - name: Download FRPC (Latest Stable)
+      - name: Download Base Raspberry Pi Image
+        if: steps.cache-rpios.outputs.cache-hit != 'true'
         run: |
+          wget -q -O rpios.img.xz \
+            https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
+
+      - name: Decompress base image
+        run: |
+          # -k keeps the .xz so the cache file stays valid for next run
+          xz -dk rpios.img.xz
+          mv rpios.img raspberrypi.img
+
+      # -----------------------------------------------------------------------
+      # Cache frpc binary — version is pinned so key never changes unless you bump it
+      # -----------------------------------------------------------------------
+      - name: Cache frpc binary
+        id: cache-frpc
+        uses: actions/cache@v4
+        with:
+          path: frpc
+          key: frpc-0.54.0-linux-arm64
+
+      - name: Download FRPC
+        if: steps.cache-frpc.outputs.cache-hit != 'true'
+        run: |
+          FRP_VERSION="0.54.0"
           wget -q https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_arm64.tar.gz
           tar -zxf frp_${FRP_VERSION}_linux_arm64.tar.gz
           mv frp_${FRP_VERSION}_linux_arm64/frpc frpc
           chmod +x frpc
 
+      # -----------------------------------------------------------------------
+      # Cache ARM64 .deb packages — keyed on install script so cache busts
+      # automatically when you change the package list
+      # -----------------------------------------------------------------------
+      - name: Cache ARM64 apt packages
+        id: cache-apt
+        uses: actions/cache@v4
+        with:
+          path: apt-cache
+          key: apt-arm64-${{ hashFiles('scripts/2_install_deps.sh') }}
+          restore-keys: apt-arm64-
+
+      - name: Download Agent from Release
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: "strct-org/strct"
+          tag: ${{ inputs.agent_version }}
+          fileName: "strct-agent-arm64"
+
       - name: Move Files to Source Folder
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/src"
-          mv strct-agent-arm64 "$GITHUB_WORKSPACE/src/"
-          mv frpc "$GITHUB_WORKSPACE/src/"
+          mkdir -p ${{ github.workspace }}/src
+          mv strct-agent-arm64 ${{ github.workspace }}/src/
+          mv frpc ${{ github.workspace }}/src/
+          echo "--- VERIFYING SRC FOLDER ---"
+          ls -lh ${{ github.workspace }}/src/
+          echo "----------------------------"
 
-      - name: Install Dependencies
+      - name: Install Host Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y eatmydata parted udev xz-utils gdisk qemu-user-static binfmt-support wget curl
-
-      - name: Download Base Image (Joshua Riek Ubuntu Server)
-        if: steps.cache-base-image.outputs.cache-hit != 'true'
-        run: |
-          echo "Downloading: $IMAGE_URL"
-          wget -q -O orangepi.img.xz "$IMAGE_URL"
-
-          echo "Decompressing..."
-          unxz -T0 orangepi.img.xz
-
-          find . -maxdepth 1 -name '*.img' -not -name 'orangepi.img' -exec mv {} orangepi.img \;
-
-      - name: Rehydrate cached image
-        if: steps.cache-base-image.outputs.cache-hit == 'true'
-        run: |
-          if [ -f orangepi.img.xz ] && [ ! -f orangepi.img ]; then
-            unxz -T0 orangepi.img.xz
-          fi
+          sudo apt-get update -qq
+          # Only host tools needed — no QEMU, no ARM emulation
+          sudo apt-get install -y parted dpkg-dev
 
       - name: Run Build Script
         env:
@@ -85,18 +100,19 @@ jobs:
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           cd scripts
-          chmod +x ./*.sh
+          chmod +x *.sh
           sudo -E ./0_build_all.sh
 
       - name: Rename and Compress
         run: |
-          sudo chown "$(id -u)":"$(id -g)" strct-release-v1.img
-          mv strct-release-v1.img strct-opi3b-${{ inputs.agent_version }}.img
-          xz -T0 -3 -v strct-opi3b-${{ inputs.agent_version }}.img
+          sudo chown $(id -u):$(id -g) strct-release-v1.img
+          mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
+          # -0 is fast compression, good enough since we're uploading as artifact
+          xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: strct-opi3b-${{ inputs.agent_version }}
-          path: strct-opi3b-${{ inputs.agent_version }}.img.xz
+          name: strct-os-${{ inputs.agent_version }}
+          path: strct-os-${{ inputs.agent_version }}.img.xz
           retention-days: 5

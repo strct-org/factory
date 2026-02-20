@@ -1,5 +1,6 @@
 #!/bin/bash
-set -euo pipefail
+set -e
+
 MOUNT_POINT="mnt_root"
 
 : "${VPS_IP:?VPS_IP is not set}"
@@ -11,15 +12,27 @@ LOCAL_BINARY_PATH="../src/strct-agent-arm64"
 LOCAL_FRPC_PATH="../src/frpc"
 TARGET_DIR="$MOUNT_POINT/etc/strct"
 
-[ -f "$LOCAL_BINARY_PATH" ] || { echo "[ERROR] Agent binary missing"; exit 1; }
-[ -f "$LOCAL_FRPC_PATH" ] || { echo "[ERROR] frpc binary missing"; exit 1; }
+echo "Checking for binaries..."
+if [ ! -f "$LOCAL_BINARY_PATH" ]; then
+    echo "[ERROR] Agent binary missing at $LOCAL_BINARY_PATH"
+    exit 1
+fi
+if [ ! -f "$LOCAL_FRPC_PATH" ]; then
+    echo "[ERROR] frpc binary missing at $LOCAL_FRPC_PATH"
+    exit 1
+fi
 
+echo "Creating directories..."
 mkdir -p "$TARGET_DIR"
-cp "$LOCAL_BINARY_PATH" "$MOUNT_POINT/usr/local/bin/cloud-agent"
-chmod +x "$MOUNT_POINT/usr/local/bin/cloud-agent"
+
+echo "Copying binaries..."
+cp "$LOCAL_BINARY_PATH" "$MOUNT_POINT/usr/local/bin/strct-agent"
+chmod +x "$MOUNT_POINT/usr/local/bin/strct-agent"
+
 cp "$LOCAL_FRPC_PATH" "$TARGET_DIR/frpc"
 chmod +x "$TARGET_DIR/frpc"
 
+echo "Injecting secrets into image .env..."
 cat <<EOF > "$TARGET_DIR/.env"
 VPS_IP=$VPS_IP
 VPS_PORT=$VPS_PORT
@@ -28,43 +41,61 @@ AUTH_TOKEN=$AUTH_TOKEN
 EOF
 chmod 600 "$TARGET_DIR/.env"
 
-cat <<'EOF' > strct_agent.service
+echo "Writing systemd service file..."
+cat <<EOF > "$MOUNT_POINT/etc/systemd/system/strct-agent.service"
 [Unit]
 Description=Strct Agent
-After=network.target NetworkManager.service
-Requires=NetworkManager.service
+After=network-online.target NetworkManager.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/etc/strct
-ExecStartPre=/bin/sleep 5
-ExecStart=/usr/local/bin/cloud-agent
+ExecStart=/usr/local/bin/strct-agent
 Restart=always
 RestartSec=5s
+# Redirect stdout/stderr to journald
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-mv strct_agent.service "$MOUNT_POINT/etc/systemd/system/"
-chroot "$MOUNT_POINT" systemctl enable strct_agent.service
+echo "Enabling strct-agent service via symlink (no chroot needed)..."
+# This is exactly what 'systemctl enable' does — creates a symlink in
+# multi-user.target.wants pointing at the service file.
+WANTS_DIR="$MOUNT_POINT/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$WANTS_DIR"
+ln -sf /etc/systemd/system/strct-agent.service \
+    "$WANTS_DIR/strct-agent.service"
 
-echo "datasource_list: [ None ]" > "$MOUNT_POINT/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
-cat <<'EOF' > "$MOUNT_POINT/etc/cloud/cloud.cfg.d/99-disable-resize.cfg"
-cloud_init_modules:
- - migrator
- - bootcmd
- - write-files
- - growpart
- - resizefs
- - set_hostname
- - update_hostname
- - update_etc_hosts
- - ca-certs
- - rsyslog
- - users-groups
- - ssh
-EOF
+echo "Updating PARTUUIDs to ensure correct boot..."
+ROOT_DEV=$(findmnt -n -o SOURCE --target "$MOUNT_POINT")
+if [ -z "$ROOT_DEV" ]; then
+    echo "[ERROR] Could not find mounted loop device for UUID update."
+    exit 1
+fi
 
-echo "[OK] Agent baked in & Service timing optimized."
+BOOT_DEV="${ROOT_DEV%p2}p1"
+CURRENT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV")
+BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV")
+
+if [ -z "$CURRENT_UUID" ] || [ -z "$BOOT_UUID" ]; then
+    echo "[ERROR] Failed to fetch UUIDs."
+    exit 1
+fi
+
+echo "Root P2 PARTUUID: $CURRENT_UUID"
+echo "Boot P1 PARTUUID: $BOOT_UUID"
+
+# Handle both Bookworm (/boot/firmware) and Bullseye (/boot) layouts
+CMDLINE_PATH="$MOUNT_POINT/boot/firmware/cmdline.txt"
+[ -f "$MOUNT_POINT/boot/cmdline.txt" ] && CMDLINE_PATH="$MOUNT_POINT/boot/cmdline.txt"
+
+sed -i "s/root=PARTUUID=[^ ]*/root=PARTUUID=$CURRENT_UUID/" "$CMDLINE_PATH"
+sed -i "s/PARTUUID=[^ ]*[ \t]*\/[ \t]/PARTUUID=$CURRENT_UUID \/ /" "$MOUNT_POINT/etc/fstab"
+sed -i "s/PARTUUID=[^ ]*[ \t]*\/boot/PARTUUID=$BOOT_UUID \/boot/" "$MOUNT_POINT/etc/fstab"
+
+echo "[OK] Agent baked in successfully."
