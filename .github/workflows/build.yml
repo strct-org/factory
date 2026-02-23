@@ -54,29 +54,31 @@ jobs:
 
       - name: Download Orange Pi OS Image
         run: |
-          # ─────────────────────────────────────────────────────────────────
-          # MUST be an Orange Pi image — NOT Raspberry Pi.
-          #
-          # A Raspberry Pi image will NEVER boot on Orange Pi hardware.
-          # They have different bootloaders (U-Boot configs), different
-          # device trees, and different kernel builds. The logo-stuck screen
-          # you were seeing was caused by using a Raspberry Pi image.
-          #
-          # Find the correct image for YOUR board at:
-          #   http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/
-          #
-          # The URL below is for Orange Pi Zero 3 (Allwinner H618, Debian Bookworm).
-          # Replace it if you have a different board (OPi5, OPi3B, etc).
-          # Use the "Server" variant — smallest image, no desktop.
-          # ─────────────────────────────────────────────────────────────────
-          wget -q -O orangepi.img.xz \
-            "https://github.com/orangepi-xunlong/orangepi-build/releases/download/v1.0.0/Orangepizero3_1.0.0_debian_bookworm_server_linux6.1.31.xz"
-
+          # Verified working URL for Orange Pi Zero 3, Debian Bookworm server
+          # Source: https://github.com/stas2z/orange-pi-images/releases/tag/0.2-bookworm
+          # 1.5gb variant has more free space for apt installs during chroot
+          IMG_URL="https://github.com/stas2z/orange-pi-images/releases/download/0.2-bookworm/Orangepizero3_1.0.2_debian_bookworm_server_linux6.1.31_1.5gb.img.xz"
+          
+          echo "Downloading Orange Pi Zero 3 image..."
+          wget --progress=dot:giga -O orangepi.img.xz "$IMG_URL"
+          
+          # Verify we got a real file, not a 404 HTML page
+          FILE_SIZE=$(stat -c%s orangepi.img.xz)
+          if [ "$FILE_SIZE" -lt 1000000 ]; then
+            echo "[ERROR] Downloaded file is only ${FILE_SIZE} bytes — download likely failed"
+            echo "        File contents:"
+            head -c 200 orangepi.img.xz
+            exit 1
+          fi
+          echo "Download size: $(ls -lh orangepi.img.xz | awk '{print $5}')"
+          
           echo "Decompressing image..."
           unxz orangepi.img.xz
-
-          # Scripts expect the source image to be named orangepi.img at the repo root
-          mv *.img orangepi.img
+          
+          # Rename whatever .img came out to the expected name
+          # (avoid glob ambiguity — be explicit)
+          IMGFILE=$(ls *.img | head -1)
+          [ "$IMGFILE" != "orangepi.img" ] && mv "$IMGFILE" orangepi.img
           echo "Image size: $(ls -lh orangepi.img | awk '{print $5}')"
 
       - name: Run Build Script
