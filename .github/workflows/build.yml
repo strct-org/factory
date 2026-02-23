@@ -52,16 +52,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y parted udev e2fsprogs util-linux xz-utils
 
-      - name: Download Orange Pi OS Image
+      - name: Download Armbian Image for Orange Pi 3B
         run: |
-          # Verified working URL for Orange Pi Zero 3, Debian Bookworm server
-          # Source: https://github.com/stas2z/orange-pi-images/releases/tag/0.2-bookworm
-          # 1.5gb variant has more free space for apt installs during chroot
-          IMG_URL="https://github.com/stas2z/orange-pi-images/releases/download/0.2-bookworm/Orangepizero3_1.0.2_debian_bookworm_server_linux6.1.31_1.5gb.img.xz"
-          
-          echo "Downloading Orange Pi Zero 3 image..."
+          # Armbian vendor-kernel minimal image for Orange Pi 3B (Rockchip RK3566).
+          # This is the CORRECT image for the 3B — the previous image
+          # (stas2z/orange-pi-images Zero3) was for the H618 SoC (Orange Pi Zero 3)
+          # which is a completely different chip. Using that image causes a black
+          # screen at boot because the kernel, DTBs, and drivers are all wrong.
+          #
+          # The vendor kernel (6.1.x) is required because mainline kernel support
+          # for RK3566 HDMI / GPU is not yet complete in Armbian's community builds.
+          #
+          # Download URL pattern: https://dl.armbian.com/<board>/<Distro_variant>
+          # The redirect resolves to the latest build automatically.
+          IMG_URL="https://dl.armbian.com/orangepi3b/Trixie_vendor_minimal"
+
+          echo "Downloading Armbian Orange Pi 3B image..."
           wget --progress=dot:giga -O orangepi.img.xz "$IMG_URL"
-          
+
           # Verify we got a real file, not a 404 HTML page
           FILE_SIZE=$(stat -c%s orangepi.img.xz)
           if [ "$FILE_SIZE" -lt 1000000 ]; then
@@ -71,12 +79,10 @@ jobs:
             exit 1
           fi
           echo "Download size: $(ls -lh orangepi.img.xz | awk '{print $5}')"
-          
+
           echo "Decompressing image..."
           unxz orangepi.img.xz
-          
-          # Rename whatever .img came out to the expected name
-          # (avoid glob ambiguity — be explicit)
+
           IMGFILE=$(ls *.img | head -1)
           [ "$IMGFILE" != "orangepi.img" ] && mv "$IMGFILE" orangepi.img
           echo "Image size: $(ls -lh orangepi.img | awk '{print $5}')"
@@ -94,9 +100,6 @@ jobs:
 
       - name: Verify Built Image
         run: |
-          # Runs diagnose.sh against the finished image and prints the result
-          # to the Actions log. If PARTUUIDs are wrong or the agent binary
-          # is missing, you'll see it here without having to flash the card.
           chmod +x scripts/diagnose.sh
           sudo ./scripts/diagnose.sh --image strct-release-v1.img
 

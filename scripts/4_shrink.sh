@@ -9,22 +9,25 @@ echo "Syncing filesystem..."
 sync
 
 echo "Unmounting image partitions..."
-umount -lf "$MOUNT_POINT/boot/firmware" 2>/dev/null || true
-umount -lf "$MOUNT_POINT/boot"          2>/dev/null || true
-umount -lf "$MOUNT_POINT/dev"           2>/dev/null || true
-umount -lf "$MOUNT_POINT/proc"          2>/dev/null || true
-umount -lf "$MOUNT_POINT/sys"           2>/dev/null || true
-umount -lf "$MOUNT_POINT"              2>/dev/null || true
+# Armbian mounts boot at /boot (not /boot/firmware)
+umount -lf "$MOUNT_POINT/boot"  2>/dev/null || true
+umount -lf "$MOUNT_POINT/dev"   2>/dev/null || true
+umount -lf "$MOUNT_POINT/proc"  2>/dev/null || true
+umount -lf "$MOUNT_POINT/sys"   2>/dev/null || true
+umount -lf "$MOUNT_POINT"       2>/dev/null || true
 sync
 
 echo "Detaching all loop devices..."
 losetup -D
 
 # ---------------------------------------------------------------------------
-# Strategy: shrink the ext4 filesystem only, then truncate the image file
-# to just past the end of partition 2 as defined by the ORIGINAL partition
-# table. We never rewrite the partition table — doing so risks corrupting
-# the MBR or the U-Boot payload stored in raw sectors 8-8191 before p1.
+# Strategy: shrink the ext4 root filesystem (p2), then truncate the image
+# file to just past the end of p2 as defined by the partition table.
+#
+# We never rewrite or move partition boundaries — doing so would destroy the
+# raw U-Boot / idbloader payload stored in sectors 64–16383 before p1, which
+# is what actually makes the board boot. We only remove the empty space we
+# appended in 1_mount.sh.
 # ---------------------------------------------------------------------------
 
 echo "Attaching image..."
@@ -40,21 +43,19 @@ resize2fs -M "${LOOP_DEV}p2"
 echo "  Running fsck after resize..."
 e2fsck -f -y "${LOOP_DEV}p2"
 
-# ---------------------------------------------------------------------------
-# Calculate truncation point.
-# We truncate the IMAGE to just past the END of p2 as the partition table
-# already defines it — we are NOT moving the partition boundary, just
-# removing the empty space we added in 1_mount.sh.
-#
-# Get p2 end sector from fdisk output on the IMAGE FILE (not loop device).
-# fdisk prints rows like:
-#   ../work_image.img2   2105344  11337727  9232384  4.4G  83  Linux
-# We match any row whose first field ends in "2" and grab the end sector,
-# which is the second numeric field >= 2048 (start is first, end is second).
-# ---------------------------------------------------------------------------
 losetup -d "$LOOP_DEV"
 sync
 
+# ---------------------------------------------------------------------------
+# Calculate truncation point from the p2 partition boundary.
+#
+# fdisk output for the 2-partition Armbian layout looks like:
+#   Device          Boot   Start      End  Sectors  Size  Id  Type
+#   work_image.img1         8192   409599   401408  196M   c  W95 FAT32 (LBA)
+#   work_image.img2       409600  xxxxxxx  xxxxxxx  ...   83  Linux
+#
+# We match the row whose device field ends in "2" and extract its End sector.
+# ---------------------------------------------------------------------------
 FDISK_OUT=$(fdisk -l "$IMAGE_FILE")
 echo ""
 echo "  Partition table:"
@@ -69,7 +70,7 @@ P2_END_SECTOR=$(echo "$FDISK_OUT" | awk '
         for (i=2; i<=NF; i++) {
             if ($i ~ /^[0-9]+$/ && $i+0 >= 2048) {
                 count++
-                if (count == 2) {   # first numeric >= 2048 is Start, second is End
+                if (count == 2) {   # Start is first large int, End is second
                     print $i
                     exit
                 }
@@ -84,7 +85,7 @@ if [ -z "$P2_END_SECTOR" ] || [ -z "$SECTOR_SIZE" ]; then
     exit 1
 fi
 
-# Truncate to just past the last sector of p2, with a small 1MB safety buffer
+# Truncate to just past the last sector of p2, plus a small 1MB safety buffer
 TRUNCATE_BYTES=$(( ( P2_END_SECTOR + 1 ) * SECTOR_SIZE + 1048576 ))
 
 echo "  Sector size:    $SECTOR_SIZE B"

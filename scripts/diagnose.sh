@@ -2,6 +2,13 @@
 # =============================================================================
 # diagnose.sh — inspect a built image or flashed SD card
 #
+# Designed for Armbian Orange Pi 3B (Rockchip RK3566) images.
+#
+# Partition layout:
+#   p1 = FAT32 boot  — kernel, DTBs, extlinux/extlinux.conf, armbianEnv.txt
+#   p2 = ext4 root   — full Debian rootfs
+#   Raw sectors 64–16383 before p1 = U-Boot / idbloader (NOT a partition)
+#
 # Usage (on the image file, before flashing):
 #   sudo ./diagnose.sh --image ../strct-os-v1.0.3.img.xz
 #   sudo ./diagnose.sh --image ../strct-release-v1.img
@@ -69,12 +76,11 @@ if [ "$MODE" = "image" ]; then
         exit 1
     fi
 
-    # Decompress if needed
     IMGFILE="$TARGET"
     if [[ "$TARGET" == *.xz ]]; then
         echo "Decompressing $TARGET (this may take a minute)..."
         IMGFILE="${TARGET%.xz}"
-        xz -dk "$TARGET"   # -k = keep original, -d = decompress
+        xz -dk "$TARGET"
     fi
 
     echo "Setting up loop device for $IMGFILE..."
@@ -92,16 +98,16 @@ elif [ "$MODE" = "device" ]; then
     fi
     BOOT_DEV="${TARGET}1"
     ROOT_DEV="${TARGET}2"
-    # On macOS partitions may be named differently
     [ ! -b "$BOOT_DEV" ] && BOOT_DEV="${TARGET}s1"
     [ ! -b "$ROOT_DEV" ] && ROOT_DEV="${TARGET}s2"
 fi
 
 echo ""
 echo "============================================================"
-echo " Strct OS Image Diagnostics"
-echo " Boot partition: $BOOT_DEV"
-echo " Root partition: $ROOT_DEV"
+echo " Strct OS Image Diagnostics (Armbian / Orange Pi 3B / RK3566)"
+echo " Boot partition: $BOOT_DEV  (FAT32, extlinux + DTBs)"
+echo " Root partition: $ROOT_DEV  (ext4, Debian rootfs)"
+echo " Note: U-Boot lives in raw sectors before p1 — not a partition"
 echo "============================================================"
 
 # ── Check partitions exist ────────────────────────────────────────────────────
@@ -120,26 +126,17 @@ else
     exit 1
 fi
 
-# ── Read PARTUUIDs from the actual partitions ─────────────────────────────────
+# ── PARTUUIDs (informational only for RK3566) ─────────────────────────────────
 echo ""
-echo "--- PARTUUIDs (from blkid — informational for U-Boot boards) ---"
-ACTUAL_ROOT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV")
-ACTUAL_BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV")
+echo "--- PARTUUIDs (informational — U-Boot finds root by partition number) ---"
+ACTUAL_ROOT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV" 2>/dev/null || true)
+ACTUAL_BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV" 2>/dev/null || true)
+[ -n "$ACTUAL_ROOT_UUID" ] && ok "Root PARTUUID: $ACTUAL_ROOT_UUID" || warn "Root PARTUUID empty (normal for GPT or some MBR layouts)"
+[ -n "$ACTUAL_BOOT_UUID" ] && ok "Boot PARTUUID: $ACTUAL_BOOT_UUID" || warn "Boot PARTUUID empty"
 
-if [ -n "$ACTUAL_ROOT_UUID" ]; then
-    ok "Root PARTUUID: $ACTUAL_ROOT_UUID"
-else
-    warn "Root PARTUUID is empty — may be normal for some partition table types"
-fi
-if [ -n "$ACTUAL_BOOT_UUID" ]; then
-    ok "Boot PARTUUID: $ACTUAL_BOOT_UUID"
-else
-    warn "Boot PARTUUID is empty — may be normal for some partition table types"
-fi
-
-# ── Mount boot partition and check contents ───────────────────────────────────
+# ── Mount boot partition ──────────────────────────────────────────────────────
 echo ""
-echo "--- Boot partition contents ---"
+echo "--- Boot partition (FAT32) ---"
 TMP_BOOT=$(mktemp -d)
 CLEANUP_MOUNTS+=("$TMP_BOOT")
 
@@ -153,63 +150,81 @@ echo ""
 echo "  Boot partition file listing:"
 ls -lh "$TMP_BOOT/" | while IFS= read -r line; do info "$line"; done
 
-# ── cmdline.txt check ─────────────────────────────────────────────────────────
-# NOTE: Orange Pi uses U-Boot — cmdline.txt is a Raspberry Pi concept.
-# U-Boot finds the root partition by partition number, not PARTUUID in a file.
-# We warn (not fail) if cmdline.txt is absent, since that's expected here.
-CMDLINE=""
-if [ -f "$TMP_BOOT/cmdline.txt" ]; then
-    CMDLINE="$TMP_BOOT/cmdline.txt"
-elif [ -f "$TMP_BOOT/firmware/cmdline.txt" ]; then
-    CMDLINE="$TMP_BOOT/firmware/cmdline.txt"
-fi
-
-if [ -z "$CMDLINE" ]; then
-    warn "cmdline.txt not found — expected for Orange Pi (U-Boot board), skipping boot arg check"
-else
-    ok "Found: $CMDLINE"
+# ── extlinux.conf check ───────────────────────────────────────────────────────
+echo ""
+echo "  extlinux check (Armbian/RK3566 boot method):"
+if [ -f "$TMP_BOOT/extlinux/extlinux.conf" ]; then
+    ok "extlinux/extlinux.conf found"
     echo ""
-    info "cmdline.txt contents:"
-    info "$(cat "$CMDLINE")"
-    echo ""
+    info "extlinux.conf contents:"
+    while IFS= read -r line; do info "  $line"; done < "$TMP_BOOT/extlinux/extlinux.conf"
 
-    ROOT_ARG=$(grep -oP 'root=\S+' "$CMDLINE" || echo "")
-    if [ -z "$ROOT_ARG" ]; then
-        fail "No root= argument in cmdline.txt"
+    # Check for correct DTB
+    DTB_LINE=$(grep -i "fdt\|dtb" "$TMP_BOOT/extlinux/extlinux.conf" || true)
+    if echo "$DTB_LINE" | grep -qi "orangepi-3b\|rk3566-orangepi"; then
+        ok "DTB references Orange Pi 3B ✓"
+    elif [ -n "$DTB_LINE" ]; then
+        warn "DTB line found but does not mention orangepi-3b — verify it is correct:"
+        info "  $DTB_LINE"
     else
-        info "root= argument: $ROOT_ARG"
-        CMDLINE_UUID=$(echo "$ROOT_ARG" | grep -oP 'PARTUUID=\K\S+' || echo "")
-
-        if [ -z "$CMDLINE_UUID" ]; then
-            warn "root= does not use PARTUUID — may be fine for U-Boot boards"
-        elif [ "$CMDLINE_UUID" = "$ACTUAL_ROOT_UUID" ]; then
-            ok "cmdline.txt PARTUUID matches actual partition ✓"
-        else
-            fail "PARTUUID MISMATCH:"
-            fail "  cmdline.txt says: $CMDLINE_UUID"
-            fail "  Actual partition: $ACTUAL_ROOT_UUID"
-        fi
+        warn "No FDT/DTB line found in extlinux.conf — U-Boot will use its compiled-in default"
     fi
+else
+    warn "extlinux/extlinux.conf not found"
+    info "Expected at: ${TMP_BOOT}/extlinux/extlinux.conf"
+    info "This may indicate the wrong base image was used (e.g. H618 instead of RK3566)"
 fi
 
-# Check for U-Boot env files (Orange Pi specific)
-if [ -f "$TMP_BOOT/orangepiEnv.txt" ]; then
-    ok "orangepiEnv.txt present (U-Boot environment)"
-    info "$(cat "$TMP_BOOT/orangepiEnv.txt")"
-elif [ -f "$TMP_BOOT/armbianEnv.txt" ]; then
-    ok "armbianEnv.txt present (U-Boot environment)"
-    info "$(cat "$TMP_BOOT/armbianEnv.txt")"
+# ── armbianEnv.txt check ──────────────────────────────────────────────────────
+echo ""
+if [ -f "$TMP_BOOT/armbianEnv.txt" ]; then
+    ok "armbianEnv.txt present"
+    info "Contents:"
+    while IFS= read -r line; do info "  $line"; done < "$TMP_BOOT/armbianEnv.txt"
 else
-    warn "No orangepiEnv.txt or armbianEnv.txt found — U-Boot will use defaults"
+    warn "armbianEnv.txt not found — overlays and verbosity settings use defaults"
+fi
+
+# cmdline.txt is a Raspberry Pi concept — explicitly confirm its absence is expected
+if [ -f "$TMP_BOOT/cmdline.txt" ]; then
+    warn "cmdline.txt found — unexpected for RK3566/Armbian (this is a Raspberry Pi file)"
+else
+    ok "cmdline.txt absent — correct for RK3566 U-Boot + extlinux boot"
+fi
+
+# ── DTB presence check ────────────────────────────────────────────────────────
+echo ""
+echo "  DTB files for Orange Pi 3B:"
+DTB_FOUND=false
+for dtb in \
+    "$TMP_BOOT/dtb/rockchip/rk3566-orangepi-3b.dtb" \
+    "$TMP_BOOT/dtb/rockchip/rk3566-orangepi-3b-v2.1.dtb" \
+    "$TMP_BOOT/dtb/rk3566-orangepi-3b.dtb"; do
+    if [ -f "$dtb" ]; then
+        ok "Found: $dtb"
+        DTB_FOUND=true
+    fi
+done
+if [ "$DTB_FOUND" = "false" ]; then
+    # List what DTBs are there so user can see
+    if [ -d "$TMP_BOOT/dtb/rockchip" ]; then
+        warn "No rk3566-orangepi-3b*.dtb found. Available Rockchip DTBs:"
+        ls "$TMP_BOOT/dtb/rockchip/" | grep -i "rk3566\|orangepi" | while IFS= read -r f; do info "  $f"; done || true
+    elif [ -d "$TMP_BOOT/dtb" ]; then
+        warn "No rk3566-orangepi-3b*.dtb found. dtb/ contents:"
+        ls "$TMP_BOOT/dtb/" | while IFS= read -r f; do info "  $f"; done
+    else
+        fail "No dtb/ directory found on boot partition — wrong base image?"
+    fi
 fi
 
 umount "$TMP_BOOT"
 CLEANUP_MOUNTS=("${CLEANUP_MOUNTS[@]/$TMP_BOOT}")
 rmdir "$TMP_BOOT"
 
-# ── Mount root partition and check fstab + agent files ───────────────────────
+# ── Mount root partition ──────────────────────────────────────────────────────
 echo ""
-echo "--- Root partition contents ---"
+echo "--- Root partition (ext4) ---"
 TMP_ROOT=$(mktemp -d)
 CLEANUP_MOUNTS+=("$TMP_ROOT")
 
@@ -221,13 +236,11 @@ ok "Root partition mounted"
 
 # Check fstab
 echo ""
-echo "  fstab:"
+echo "  /etc/fstab:"
 if [ -f "$TMP_ROOT/etc/fstab" ]; then
-    while IFS= read -r line; do
-        info "  $line"
-    done < "$TMP_ROOT/etc/fstab"
+    while IFS= read -r line; do info "  $line"; done < "$TMP_ROOT/etc/fstab"
 else
-    warn "/etc/fstab not found on root partition"
+    warn "/etc/fstab not found"
 fi
 
 # Check agent binary
@@ -236,13 +249,12 @@ echo "  Agent files:"
 if [ -f "$TMP_ROOT/usr/local/bin/strct-agent" ]; then
     ok "strct-agent binary present"
     info "$(ls -lh "$TMP_ROOT/usr/local/bin/strct-agent")"
-    # Check it's actually an ARM64 ELF
     FILETYPE=$(file "$TMP_ROOT/usr/local/bin/strct-agent")
     info "$FILETYPE"
     if echo "$FILETYPE" | grep -q "aarch64\|ARM aarch64"; then
         ok "Binary is ARM64 ✓"
     else
-        fail "Binary is NOT ARM64 — will fail on Orange Pi"
+        fail "Binary is NOT ARM64 — will fail on Orange Pi 3B"
         info "Expected: ELF 64-bit LSB executable, ARM aarch64"
     fi
 else
@@ -271,7 +283,6 @@ else
     fail "strct-agent.service NOT found"
 fi
 
-# Check service is enabled (symlink in multi-user.target.wants)
 if [ -L "$TMP_ROOT/etc/systemd/system/multi-user.target.wants/strct-agent.service" ]; then
     ok "Service is enabled (symlink exists)"
 else
@@ -296,7 +307,16 @@ rmdir "$TMP_ROOT"
 echo ""
 echo "============================================================"
 echo " Diagnostics complete."
-echo " Orange Pi uses U-Boot — boot is controlled by partition"
-echo " layout, not cmdline.txt. If it hangs, connect a serial"
-echo " console (UART pins on the Orange Pi) to see kernel output."
+echo ""
+echo " Orange Pi 3B boot chain:"
+echo "   1. ROM loads idbloader from raw sectors 64-16383"
+echo "   2. idbloader loads U-Boot from sectors 16384+"
+echo "   3. U-Boot reads extlinux/extlinux.conf from p1 (FAT32)"
+echo "   4. extlinux.conf points U-Boot at kernel + DTB"
+echo "   5. Kernel boots, mounts p2 as rootfs"
+echo ""
+echo " If it still shows black screen after fixing the base image:"
+echo "   - Connect via SSH over ethernet to confirm the OS is actually running"
+echo "   - Check dmesg | grep -i drm for display driver errors"
+echo "   - The vendor kernel 6.1.x is required for stable HDMI on RK3566"
 echo "============================================================"
