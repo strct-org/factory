@@ -12,20 +12,10 @@ MOUNT_POINT="mnt_root"
 # The partition table is GPT. U-Boot / idbloader live in raw sectors 64–16383
 # BEFORE p1 — do NOT touch those sectors.
 #
-# Why we avoid parted entirely:
-#   GPT stores a backup header at the very last sector. After dd-appending
-#   space, that header is no longer at the end. parted -s refuses to act on
-#   ANY image with a misplaced GPT backup header and returns "Partition
-#   doesn't exist." even after sgdisk -e, because parted revalidates and
-#   finds the 2048-block alignment rounding leaves a tiny gap it considers
-#   an error.
-#
-# Solution: do everything with sgdisk:
-#   1. Read p2's start sector before touching anything
-#   2. sgdisk -e   → move backup GPT header to true end of enlarged file
-#   3. sgdisk -d 2 → delete p2 entry (start sector recorded above)
-#   4. sgdisk -n   → recreate p2 from same start to end of disk (sector 0)
-#   5. sgdisk -t   → restore Linux filesystem type (8300)
+# We read p2's start sector from the ORIGINAL image BEFORE appending space,
+# because sgdisk -i can't parse a GPT whose backup header is displaced.
+# After dd we: fix the header with sgdisk -e, delete p2, recreate it from
+# the same start to end of disk, then resize the ext4 fs inside it.
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [ ! -f "$SOURCE_IMAGE" ]; then
@@ -34,26 +24,27 @@ if [ ! -f "$SOURCE_IMAGE" ]; then
     exit 1
 fi
 
+echo "Reading p2 start sector from original image (before any modification)..."
+P2_START=$(sgdisk -i 2 "$SOURCE_IMAGE" | awk '/First sector:/{print $3}')
+if [ -z "$P2_START" ]; then
+    echo "[ERROR] Could not read p2 start sector — is $SOURCE_IMAGE a valid GPT image?"
+    sgdisk -p "$SOURCE_IMAGE" || true
+    exit 1
+fi
+echo "  p2 starts at sector: $P2_START"
+
 echo "Creating working copy of image (original is preserved)..."
 cp "$SOURCE_IMAGE" "$WORK_IMAGE"
 
 echo "Adding 2GB of space to image..."
 dd if=/dev/zero bs=1G count=2 >> "$WORK_IMAGE"
 
-echo "Capturing p2 start sector before modifying GPT..."
-P2_START=$(sgdisk -i 2 "$WORK_IMAGE" | awk '/First sector:/{print $3}')
-if [ -z "$P2_START" ]; then
-    echo "[ERROR] Could not read p2 start sector from image — is it a valid GPT image?"
-    exit 1
-fi
-echo "  p2 starts at sector: $P2_START"
-
 echo "Moving GPT backup header to new end of disk..."
 sgdisk -e "$WORK_IMAGE"
 
 echo "Deleting old p2 entry and recreating it to fill all remaining space..."
-# -d 2         : delete partition 2
-# -n 2:START:0 : new partition 2 from START to last sector (0 = end of disk)
+# -d 2         : delete partition 2 table entry (data on disk untouched)
+# -n 2:START:0 : new p2 from original start to last sector (0 = end of disk)
 # -t 2:8300    : type = Linux filesystem
 sgdisk -d 2 "$WORK_IMAGE"
 sgdisk -n "2:${P2_START}:0" -t "2:8300" "$WORK_IMAGE"
