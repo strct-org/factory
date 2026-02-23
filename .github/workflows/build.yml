@@ -6,7 +6,7 @@ on:
       agent_version:
         description: 'Agent Version to install'
         required: true
-        default: 'v1.0.26'
+        default: 'v1.0.3'
 
 jobs:
   build:
@@ -17,65 +17,21 @@ jobs:
       - name: Checkout Factory Scripts
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # Cache the base RPi image — it never changes for a fixed date/version
-      # -----------------------------------------------------------------------
-      - name: Cache Raspberry Pi base image
-        id: cache-rpios
-        uses: actions/cache@v4
-        with:
-          path: rpios.img.xz
-          key: rpios-2023-12-11-bookworm-arm64-lite
-
-      - name: Download Base Raspberry Pi Image
-        if: steps.cache-rpios.outputs.cache-hit != 'true'
-        run: |
-          wget -q -O rpios.img.xz \
-            https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-11-raspios-bookworm-arm64-lite.img.xz
-
-      - name: Decompress base image
-        run: |
-          # -k keeps the .xz so the cache file stays valid for next run
-          xz -dk rpios.img.xz
-          mv rpios.img raspberrypi.img
-
-      # -----------------------------------------------------------------------
-      # Cache frpc binary — version is pinned so key never changes unless you bump it
-      # -----------------------------------------------------------------------
-      - name: Cache frpc binary
-        id: cache-frpc
-        uses: actions/cache@v4
-        with:
-          path: frpc
-          key: frpc-0.54.0-linux-arm64
-
-      - name: Download FRPC
-        if: steps.cache-frpc.outputs.cache-hit != 'true'
-        run: |
-          FRP_VERSION="0.54.0"
-          wget -q https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_arm64.tar.gz
-          tar -zxf frp_${FRP_VERSION}_linux_arm64.tar.gz
-          mv frp_${FRP_VERSION}_linux_arm64/frpc frpc
-          chmod +x frpc
-
-      # -----------------------------------------------------------------------
-      # Cache ARM64 .deb packages — keyed on install script so cache busts
-      # automatically when you change the package list
-      # -----------------------------------------------------------------------
-      - name: Cache ARM64 apt packages
-        id: cache-apt
-        uses: actions/cache@v4
-        with:
-          path: apt-cache
-          key: apt-arm64-${{ hashFiles('scripts/2_install_deps.sh') }}
-          restore-keys: apt-arm64-
-
       - name: Download Agent from Release
         uses: robinraju/release-downloader@v1
         with:
           repository: "strct-org/strct"
           tag: ${{ inputs.agent_version }}
           fileName: "strct-agent-arm64"
+
+      - name: Download FRPC (Latest Stable)
+        run: |
+          # 0.54.0+ supports the TOML config your Go code generates
+          FRP_VERSION="0.54.0"
+          wget -q https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_arm64.tar.gz
+          tar -zxvf frp_${FRP_VERSION}_linux_arm64.tar.gz
+          mv frp_${FRP_VERSION}_linux_arm64/frpc frpc
+          chmod +x frpc
 
       - name: Move Files to Source Folder
         run: |
@@ -84,13 +40,44 @@ jobs:
           mv frpc ${{ github.workspace }}/src/
           echo "--- VERIFYING SRC FOLDER ---"
           ls -lh ${{ github.workspace }}/src/
+          # Confirm the agent is actually an ARM64 binary
+          file ${{ github.workspace }}/src/strct-agent-arm64
           echo "----------------------------"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Install Host Dependencies
         run: |
-          sudo apt-get update -qq
-          # Only host tools needed — no QEMU, no ARM emulation
-          sudo apt-get install -y parted dpkg-dev
+          sudo apt-get update
+          sudo apt-get install -y parted udev e2fsprogs util-linux xz-utils
+
+      - name: Download Orange Pi OS Image
+        run: |
+          # ─────────────────────────────────────────────────────────────────
+          # MUST be an Orange Pi image — NOT Raspberry Pi.
+          #
+          # A Raspberry Pi image will NEVER boot on Orange Pi hardware.
+          # They have different bootloaders (U-Boot configs), different
+          # device trees, and different kernel builds. The logo-stuck screen
+          # you were seeing was caused by using a Raspberry Pi image.
+          #
+          # Find the correct image for YOUR board at:
+          #   http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/
+          #
+          # The URL below is for Orange Pi Zero 3 (Allwinner H618, Debian Bookworm).
+          # Replace it if you have a different board (OPi5, OPi3B, etc).
+          # Use the "Server" variant — smallest image, no desktop.
+          # ─────────────────────────────────────────────────────────────────
+          wget -q -O orangepi.img.xz \
+            "https://github.com/orangepi-xunlong/orangepi-build/releases/download/v1.0.0/Orangepizero3_1.0.0_debian_bookworm_server_linux6.1.31.xz"
+
+          echo "Decompressing image..."
+          unxz orangepi.img.xz
+
+          # Scripts expect the source image to be named orangepi.img at the repo root
+          mv *.img orangepi.img
+          echo "Image size: $(ls -lh orangepi.img | awk '{print $5}')"
 
       - name: Run Build Script
         env:
@@ -103,11 +90,18 @@ jobs:
           chmod +x *.sh
           sudo -E ./0_build_all.sh
 
+      - name: Verify Built Image
+        run: |
+          # Runs diagnose.sh against the finished image and prints the result
+          # to the Actions log. If PARTUUIDs are wrong or the agent binary
+          # is missing, you'll see it here without having to flash the card.
+          chmod +x scripts/diagnose.sh
+          sudo ./scripts/diagnose.sh --image strct-release-v1.img
+
       - name: Rename and Compress
         run: |
           sudo chown $(id -u):$(id -g) strct-release-v1.img
           mv strct-release-v1.img strct-os-${{ inputs.agent_version }}.img
-          # -0 is fast compression, good enough since we're uploading as artifact
           xz -z -v -0 strct-os-${{ inputs.agent_version }}.img
 
       - name: Upload Image

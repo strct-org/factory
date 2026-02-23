@@ -1,16 +1,17 @@
 #!/bin/bash
 set -e
 
-SOURCE_IMAGE="../raspberrypi.img"
+SOURCE_IMAGE="../orangepi.img"
 WORK_IMAGE="../work_image.img"
 MOUNT_POINT="mnt_root"
 
 if [ ! -f "$SOURCE_IMAGE" ]; then
     echo "[ERROR] Cannot find $SOURCE_IMAGE"
+    echo "        build.yml should have downloaded and named it orangepi.img"
     exit 1
 fi
 
-echo "Creating working copy of image..."
+echo "Creating working copy of image (original is preserved)..."
 cp "$SOURCE_IMAGE" "$WORK_IMAGE"
 
 echo "Adding 2GB of space to image..."
@@ -33,20 +34,28 @@ resize2fs "${LOOP_DEV}p2"
 echo "Mounting root partition (p2)..."
 mount "${LOOP_DEV}p2" $MOUNT_POINT
 
-if [ -d "$MOUNT_POINT/boot/firmware" ]; then
-    echo "Detected Bookworm layout — mounting boot to /boot/firmware..."
+# Orange Pi Debian images use /boot — not /boot/firmware like Raspberry Pi OS.
+# We check for cmdline.txt to confirm which layout is present.
+if [ -f "$MOUNT_POINT/boot/firmware/cmdline.txt" ]; then
+    echo "Detected /boot/firmware layout. Mounting boot there..."
     mount "${LOOP_DEV}p1" $MOUNT_POINT/boot/firmware
-else
-    echo "Detected Bullseye/Legacy layout — mounting boot to /boot..."
+elif [ -d "$MOUNT_POINT/boot" ]; then
+    echo "Detected /boot layout. Mounting boot there..."
     mount "${LOOP_DEV}p1" $MOUNT_POINT/boot
+else
+    echo "[ERROR] Cannot determine boot mount point — neither /boot nor /boot/firmware exist"
+    exit 1
 fi
 
-# NOTE: We do NOT bind-mount /dev, /proc, /sys or inject QEMU here.
-# The new 2_install_deps.sh extracts .deb files natively on the host
-# using dpkg-deb — no chroot execution required. This is why the build
-# is fast: no ARM64 emulation at any point.
+echo "Binding system directories for chroot..."
+mount --bind /dev  $MOUNT_POINT/dev
+mount --bind /proc $MOUNT_POINT/proc
+mount --bind /sys  $MOUNT_POINT/sys
 
-echo "Copying DNS resolver for any host-side operations..."
+echo "Injecting QEMU for ARM64..."
+cp /usr/bin/qemu-aarch64-static $MOUNT_POINT/usr/bin/
+
+echo "Copying DNS resolver..."
 cp /etc/resolv.conf $MOUNT_POINT/etc/resolv.conf
 
 echo "[OK] Image mounted and expanded at $MOUNT_POINT"
