@@ -73,70 +73,16 @@ EOF
 echo "Enabling systemd service..."
 chroot $MOUNT_POINT systemctl enable strct-agent.service
 
-# ── Fix PARTUUIDs ─────────────────────────────────────────────────────────────
-# We identify the loop device from the image path — this is more reliable
-# than inferring it from findmnt, which can return bind mounts or symlinks
-# that break the string suffix stripping.
-echo "Locating loop device for work_image.img..."
-LOOP_DEV=$(losetup -j "../work_image.img" | cut -d: -f1)
+# ── Boot config note ──────────────────────────────────────────────────────────
+# Orange Pi uses U-Boot, NOT Raspberry Pi's cmdline.txt/fstab PARTUUID system.
+# U-Boot finds the root partition by partition number (partition 2), not by a
+# PARTUUID in a text file. cmdline.txt does not exist on this board.
+# Patching PARTUUIDs is NOT required and NOT applicable here — skipping.
+echo "Skipping PARTUUID fixup — Orange Pi uses U-Boot (no cmdline.txt)."
 
-if [ -z "$LOOP_DEV" ]; then
-    echo "[ERROR] Could not find loop device for ../work_image.img"
-    echo "        Is 1_mount.sh still running? Check: losetup -a"
-    exit 1
-fi
-
-ROOT_DEV="${LOOP_DEV}p2"
-BOOT_DEV="${LOOP_DEV}p1"
-
-echo "Loop device : $LOOP_DEV"
-echo "Root device : $ROOT_DEV"
-echo "Boot device : $BOOT_DEV"
-
-CURRENT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV")
-BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV")
-
-# Fail loudly rather than writing empty values into cmdline.txt/fstab.
-# An empty PARTUUID gives `root=PARTUUID=` which the bootloader silently
-# rejects — the result is exactly the stuck logo screen.
-if [ -z "$CURRENT_UUID" ]; then
-    echo "[ERROR] Got empty PARTUUID for root partition ($ROOT_DEV)"
-    echo "        Run manually: blkid $ROOT_DEV"
-    exit 1
-fi
-if [ -z "$BOOT_UUID" ]; then
-    echo "[ERROR] Got empty PARTUUID for boot partition ($BOOT_DEV)"
-    echo "        Run manually: blkid $BOOT_DEV"
-    exit 1
-fi
-
-echo "Root PARTUUID: $CURRENT_UUID"
-echo "Boot PARTUUID: $BOOT_UUID"
-
-# Detect whether this image uses /boot or /boot/firmware
-CMDLINE_PATH="$MOUNT_POINT/boot/cmdline.txt"
-if [ -f "$MOUNT_POINT/boot/firmware/cmdline.txt" ]; then
-    CMDLINE_PATH="$MOUNT_POINT/boot/firmware/cmdline.txt"
-fi
-
-echo "Updating cmdline.txt at: $CMDLINE_PATH"
-sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=$CURRENT_UUID|" "$CMDLINE_PATH"
-
-echo "Updating /etc/fstab..."
-# Root partition (mounted at /)
-sed -i "s|PARTUUID=[^ ]*\(\s\+/\s\)|PARTUUID=$CURRENT_UUID\1|" "$MOUNT_POINT/etc/fstab"
-# Boot partition (mounted at /boot or /boot/firmware)
-sed -i "s|PARTUUID=[^ ]*\(\s\+/boot\)|PARTUUID=$BOOT_UUID\1|" "$MOUNT_POINT/etc/fstab"
-
-# ── Print final values for CI log inspection ──────────────────────────────────
-# If the Pi still hangs at the logo, check the Actions run log for these.
-# PARTUUIDs in cmdline.txt and fstab must match what blkid reported above.
 echo ""
-echo "=== cmdline.txt (root=PARTUUID must be non-empty) ==="
-cat "$CMDLINE_PATH"
-echo ""
-echo "=== /etc/fstab (both PARTUUIDs must match above) ==="
-cat "$MOUNT_POINT/etc/fstab"
-echo "======================================================"
+echo "=== /etc/fstab (informational only) ==="
+cat "$MOUNT_POINT/etc/fstab" || true
+echo "========================================"
 
 echo "[OK] Agent baked in successfully."

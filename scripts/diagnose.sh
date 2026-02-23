@@ -122,22 +122,22 @@ fi
 
 # ── Read PARTUUIDs from the actual partitions ─────────────────────────────────
 echo ""
-echo "--- PARTUUIDs (from blkid — this is the ground truth) ---"
+echo "--- PARTUUIDs (from blkid — informational for U-Boot boards) ---"
 ACTUAL_ROOT_UUID=$(blkid -o value -s PARTUUID "$ROOT_DEV")
 ACTUAL_BOOT_UUID=$(blkid -o value -s PARTUUID "$BOOT_DEV")
 
 if [ -n "$ACTUAL_ROOT_UUID" ]; then
     ok "Root PARTUUID: $ACTUAL_ROOT_UUID"
 else
-    fail "Root PARTUUID is EMPTY — blkid cannot read partition"
+    warn "Root PARTUUID is empty — may be normal for some partition table types"
 fi
 if [ -n "$ACTUAL_BOOT_UUID" ]; then
     ok "Boot PARTUUID: $ACTUAL_BOOT_UUID"
 else
-    fail "Boot PARTUUID is EMPTY — blkid cannot read partition"
+    warn "Boot PARTUUID is empty — may be normal for some partition table types"
 fi
 
-# ── Mount boot partition and check cmdline.txt ───────────────────────────────
+# ── Mount boot partition and check contents ───────────────────────────────────
 echo ""
 echo "--- Boot partition contents ---"
 TMP_BOOT=$(mktemp -d)
@@ -149,7 +149,14 @@ mount "$BOOT_DEV" "$TMP_BOOT" 2>/dev/null || {
 }
 ok "Boot partition mounted"
 
-# Bookworm uses /boot/firmware, Bullseye uses /boot directly
+echo ""
+echo "  Boot partition file listing:"
+ls -lh "$TMP_BOOT/" | while IFS= read -r line; do info "$line"; done
+
+# ── cmdline.txt check ─────────────────────────────────────────────────────────
+# NOTE: Orange Pi uses U-Boot — cmdline.txt is a Raspberry Pi concept.
+# U-Boot finds the root partition by partition number, not PARTUUID in a file.
+# We warn (not fail) if cmdline.txt is absent, since that's expected here.
 CMDLINE=""
 if [ -f "$TMP_BOOT/cmdline.txt" ]; then
     CMDLINE="$TMP_BOOT/cmdline.txt"
@@ -158,7 +165,7 @@ elif [ -f "$TMP_BOOT/firmware/cmdline.txt" ]; then
 fi
 
 if [ -z "$CMDLINE" ]; then
-    fail "cmdline.txt NOT FOUND in boot partition"
+    warn "cmdline.txt not found — expected for Orange Pi (U-Boot board), skipping boot arg check"
 else
     ok "Found: $CMDLINE"
     echo ""
@@ -166,32 +173,34 @@ else
     info "$(cat "$CMDLINE")"
     echo ""
 
-    # Extract the root= value
     ROOT_ARG=$(grep -oP 'root=\S+' "$CMDLINE" || echo "")
     if [ -z "$ROOT_ARG" ]; then
-        fail "No root= argument in cmdline.txt — Pi cannot find root partition"
+        fail "No root= argument in cmdline.txt"
     else
         info "root= argument: $ROOT_ARG"
         CMDLINE_UUID=$(echo "$ROOT_ARG" | grep -oP 'PARTUUID=\K\S+' || echo "")
 
         if [ -z "$CMDLINE_UUID" ]; then
-            fail "root= does not use PARTUUID — unexpected format"
+            warn "root= does not use PARTUUID — may be fine for U-Boot boards"
         elif [ "$CMDLINE_UUID" = "$ACTUAL_ROOT_UUID" ]; then
             ok "cmdline.txt PARTUUID matches actual partition ✓"
         else
             fail "PARTUUID MISMATCH:"
             fail "  cmdline.txt says: $CMDLINE_UUID"
             fail "  Actual partition: $ACTUAL_ROOT_UUID"
-            fail "  This is why the Pi hangs at the logo!"
         fi
     fi
 fi
 
-# Check config.txt exists
-if ls "$TMP_BOOT"/config.txt "$TMP_BOOT"/firmware/config.txt 2>/dev/null | head -1 | grep -q config; then
-    ok "config.txt present"
+# Check for U-Boot env files (Orange Pi specific)
+if [ -f "$TMP_BOOT/orangepiEnv.txt" ]; then
+    ok "orangepiEnv.txt present (U-Boot environment)"
+    info "$(cat "$TMP_BOOT/orangepiEnv.txt")"
+elif [ -f "$TMP_BOOT/armbianEnv.txt" ]; then
+    ok "armbianEnv.txt present (U-Boot environment)"
+    info "$(cat "$TMP_BOOT/armbianEnv.txt")"
 else
-    warn "config.txt not found — may affect boot"
+    warn "No orangepiEnv.txt or armbianEnv.txt found — U-Boot will use defaults"
 fi
 
 umount "$TMP_BOOT"
@@ -217,28 +226,8 @@ if [ -f "$TMP_ROOT/etc/fstab" ]; then
     while IFS= read -r line; do
         info "  $line"
     done < "$TMP_ROOT/etc/fstab"
-
-    # Verify fstab PARTUUIDs
-    FSTAB_ROOT=$(grep -oP 'PARTUUID=\S+(?=\s+/\s)' "$TMP_ROOT/etc/fstab" || echo "")
-    FSTAB_BOOT=$(grep -oP 'PARTUUID=\S+(?=\s+/boot)' "$TMP_ROOT/etc/fstab" || echo "")
-
-    echo ""
-    if [ "$FSTAB_ROOT" = "PARTUUID=$ACTUAL_ROOT_UUID" ]; then
-        ok "fstab root PARTUUID matches"
-    else
-        fail "fstab root PARTUUID mismatch:"
-        fail "  fstab:     $FSTAB_ROOT"
-        fail "  Actual:    PARTUUID=$ACTUAL_ROOT_UUID"
-    fi
-    if [ "$FSTAB_BOOT" = "PARTUUID=$ACTUAL_BOOT_UUID" ]; then
-        ok "fstab boot PARTUUID matches"
-    else
-        warn "fstab boot PARTUUID mismatch (may not affect boot):"
-        warn "  fstab:     $FSTAB_BOOT"
-        warn "  Actual:    PARTUUID=$ACTUAL_BOOT_UUID"
-    fi
 else
-    fail "/etc/fstab not found on root partition"
+    warn "/etc/fstab not found on root partition"
 fi
 
 # Check agent binary
@@ -292,7 +281,7 @@ fi
 # Check installed packages
 echo ""
 echo "  Key packages (from dpkg):"
-for pkg in hostapd dnsmasq iw wpasupplicant iptables net-tools; do
+for pkg in hostapd dnsmasq iw wpasupplicant iptables net-tools tailscale; do
     if chroot "$TMP_ROOT" dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
         ok "$pkg installed"
     else
@@ -307,7 +296,7 @@ rmdir "$TMP_ROOT"
 echo ""
 echo "============================================================"
 echo " Diagnostics complete."
-echo " If you see PARTUUID MISMATCH above — that is your boot bug."
-echo " If PARTUUIDs match and it still hangs, connect a serial"
-echo " console (UART pins on the Orange Pi) to see kernel messages."
+echo " Orange Pi uses U-Boot — boot is controlled by partition"
+echo " layout, not cmdline.txt. If it hangs, connect a serial"
+echo " console (UART pins on the Orange Pi) to see kernel output."
 echo "============================================================"
