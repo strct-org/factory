@@ -27,6 +27,7 @@ apt-get update -qq
 
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     parted \
+    gdisk \
     qemu-user-static \
     binfmt-support \
     wget \
@@ -34,6 +35,10 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     udev \
     e2fsprogs \
     util-linux | tee -a $LOG_FILE
+
+# gdisk provides sgdisk, which is required to repair the GPT backup header
+# after we append space to the image with dd. Without it, parted refuses to
+# resize partitions ("Partition doesn't exist.").
 
 echo "[OK] Host environment is ready." | tee -a $LOG_FILE
 
