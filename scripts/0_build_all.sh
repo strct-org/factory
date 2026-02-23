@@ -21,29 +21,34 @@ chmod +x 1_mount.sh 2_install_deps.sh 3_copy_agent.sh 4_shrink.sh
 echo "Starting Factory Build Process..." | tee $LOG_FILE
 
 print_step "0" "CHECKING HOST REQUIREMENTS"
+echo "Checking and installing required host tools..." | tee -a $LOG_FILE
 
-# We no longer need qemu-user-static or binfmt-support —
-# ARM64 packages are extracted natively on x86, no emulation.
 apt-get update -qq
+
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     parted \
-    dpkg-dev \
+    qemu-user-static \
+    binfmt-support \
     wget \
-    curl | tee -a $LOG_FILE
+    curl \
+    udev \
+    e2fsprogs \
+    util-linux | tee -a $LOG_FILE
 
 echo "[OK] Host environment is ready." | tee -a $LOG_FILE
 
 print_step "1" "MOUNTING AND EXPANDING IMAGE"
 ./1_mount.sh | tee -a $LOG_FILE
 
-print_step "2" "INSTALLING DEPENDENCIES (native deb extraction, no QEMU)"
+print_step "2" "INSTALLING DEPENDENCIES"
 ./2_install_deps.sh | tee -a $LOG_FILE
 
 print_step "3" "INSTALLING AGENT & CONFIG"
 ./3_copy_agent.sh | tee -a $LOG_FILE
 
-print_step "4" "CLEANUP, SHRINK AND FINALIZE"
+print_step "4" "CLEANUP AND FINALIZE"
 ./4_shrink.sh | tee -a $LOG_FILE
 
 echo ""
 echo "[SUCCESS] BUILD COMPLETE."
+echo "Log saved to: $LOG_FILE"
